@@ -452,6 +452,80 @@ fig_clim.update_layout(title=f"Daily Mean Temperature: {sel_year} vs Normal",
 st.plotly_chart(fig_clim, width='stretch')
 
 # ------------------------------------------------------------
+# Annual bulletin: one-page summary of a selected year
+# ------------------------------------------------------------
+st.header("📰 Annual Bulletin")
+bul_year = st.selectbox("Select year", sorted(df["Year"].unique(), reverse=True),
+                        key="bulletin_year")
+ydf = df[df["Year"] == bul_year]
+is_complete = bul_year in complete_years
+if not is_complete:
+    st.info(f"{bul_year} is a partial year — annual totals and counts below "
+            "cover only the recorded months.")
+
+normal_mean = df_cy["MeanTemp"].mean()
+y_mean = ydf["MeanTemp"].mean()
+y_hot = ydf.loc[ydf["HighTemp"].idxmax()]
+y_cold = ydf.loc[ydf["LowTemp"].idxmin()]
+y_rain_valid = ydf.dropna(subset=["Rain_mm"])
+y_wet = y_rain_valid.loc[y_rain_valid["Rain_mm"].idxmax()] if not y_rain_valid.empty else None
+y_dry_len, y_dry_start, y_dry_end = longest_dry_spell(ydf)
+y_issues = rain_issues_overlapping(ydf["Date"].min(), ydf["Date"].max())
+
+b1, b2, b3, b4 = st.columns(4)
+with b1:
+    delta = f"{y_mean - normal_mean:+.1f} °C vs normal" if is_complete else None
+    st.metric("Annual mean temp", f"{y_mean:.1f} °C", delta=delta)
+with b2:
+    st.metric("Total rain (recorded)", f"{ydf['Rain_mm'].sum():.0f} mm")
+with b3:
+    st.metric("Days ≥ 35 °C", int((ydf["HighTemp"] >= 35).sum()))
+with b4:
+    st.metric("Tropical nights (Tmin ≥ 20 °C)", int((ydf["LowTemp"] >= 20).sum()))
+
+b5, b6, b7, b8 = st.columns(4)
+with b5:
+    st.metric("Frost days (Tmin < 0 °C)", int((ydf["LowTemp"] < 0).sum()))
+with b6:
+    st.metric("Hottest day", f"{y_hot['HighTemp']:.1f} °C")
+    st.caption(y_hot["Date"].strftime("%d %b"))
+with b7:
+    st.metric("Coldest day", f"{y_cold['LowTemp']:.1f} °C")
+    st.caption(y_cold["Date"].strftime("%d %b"))
+with b8:
+    st.metric("Longest dry spell", f"{y_dry_len} days")
+    if y_dry_start is not None:
+        st.caption(f"{y_dry_start.strftime('%d %b')} → {y_dry_end.strftime('%d %b')}")
+
+if y_wet is not None:
+    st.caption(f"Rainiest day of {bul_year}: {y_wet['Rain_mm']:.1f} mm on "
+               f"{y_wet['Date'].strftime('%d %b')}.")
+if y_issues:
+    st.warning(f"⚠️ {bul_year} includes {len(y_issues)} documented rainfall "
+               "data issue(s); rain totals and dry spells for this year may "
+               "be affected (see Data Quality).")
+
+# Monthly anomaly vs the long-term normal
+if is_complete:
+    month_norm = df_cy.groupby("Month")["MeanTemp"].mean()
+    month_year = ydf.groupby("Month")["MeanTemp"].mean()
+    anom = (month_year - month_norm).reset_index()
+    anom.columns = ["Month", "Anomaly"]
+    fig_anom = px.bar(anom, x="Month", y="Anomaly",
+                      color="Anomaly", color_continuous_scale="RdBu_r",
+                      range_color=[-4, 4],
+                      title=f"Monthly Temperature Anomaly {bul_year} vs Normal "
+                            f"({min(complete_years)}–{max(complete_years)})",
+                      labels={"Anomaly": "Δ °C"})
+    fig_anom.update_layout(coloraxis_showscale=False,
+                           xaxis=dict(tickmode="array",
+                                      tickvals=list(range(1, 13)),
+                                      ticktext=["Jan", "Feb", "Mar", "Apr",
+                                                "May", "Jun", "Jul", "Aug",
+                                                "Sep", "Oct", "Nov", "Dec"]))
+    st.plotly_chart(fig_anom, width='stretch')
+
+# ------------------------------------------------------------
 # Aggregated views (dual-axis, so temperature and rain are readable)
 # ------------------------------------------------------------
 st.header("📅 Aggregated Views")
