@@ -10,6 +10,8 @@
 KNOWN_RAIN_ISSUES / KNOWN_WIND_ISSUES και εμφανίζονται σε όλο το dashboard.
 """
 
+import os
+
 import numpy as np
 import pandas as pd
 import plotly.express as px
@@ -109,7 +111,10 @@ WIND_DIRS = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
 # Φόρτωση δεδομένων με cache
 # ------------------------------------------------------------
 @st.cache_data
-def load_data(file_path):
+def load_data(file_path, file_signature=None):
+    """Φόρτωση CSV. Το file_signature (mtime, μέγεθος) συμμετέχει στο κλειδί
+    της cache, ώστε κάθε ενημέρωση του αρχείου να την ακυρώνει αυτόματα —
+    αλλιώς το Streamlit θα σέρβιρε το παλιό περιεχόμενο από τη μνήμη."""
     df = pd.read_csv(file_path)
     df.columns = df.columns.str.strip().str.lstrip("\ufeff")
     for col in ["MeanTemp", "HighTemp", "LowTemp", "Rain_mm",
@@ -128,12 +133,24 @@ if uploaded_file is not None:
     df = load_data(uploaded_file)
 else:
     try:
-        df = load_data("kastoria_daily_all_years.csv")
+        csv_path = "kastoria_daily_all_years.csv"
+        stat = os.stat(csv_path)
+        df = load_data(csv_path, (stat.st_mtime, stat.st_size))
         st.sidebar.success("Φορτώθηκε το αρχείο: kastoria_daily_all_years.csv")
     except FileNotFoundError:
         st.error("Ανεβάστε το αρχείο CSV ή τοποθετήστε το στον ίδιο φάκελο "
                  "με όνομα 'kastoria_daily_all_years.csv'.")
         st.stop()
+
+st.sidebar.caption(
+    f"📅 Εύρος δεδομένων: {fmt_date(df['Date'].min())} – "
+    f"{fmt_date(df['Date'].max())} ({len(df)} ημέρες)"
+)
+if st.sidebar.button("🔄 Ανανέωση δεδομένων",
+                     help="Καθαρίζει την προσωρινή μνήμη και ξαναδιαβάζει "
+                          "το CSV από την αρχή."):
+    st.cache_data.clear()
+    st.rerun()
 
 # ------------------------------------------------------------
 # Βοηθητικές συναρτήσεις
