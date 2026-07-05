@@ -113,6 +113,74 @@ fig_rain = px.bar(
 st.plotly_chart(fig_rain, use_container_width=True)
 
 # ------------------------------------------------------------
+# All-time Records (within selected date range)
+# ------------------------------------------------------------
+st.header("🏅 Records")
+
+def longest_dry_spell(data):
+    """
+    Return (length_in_days, start_date, end_date) of the longest run of
+    consecutive CALENDAR days with Rain_mm == 0.
+    Days with missing rain values (NaN) or days absent from the dataset
+    break the streak, so gaps in the record can't inflate the result.
+    """
+    s = data.set_index('Date')['Rain_mm']
+    # Reindex to the full calendar so missing dates appear as NaN
+    full_index = pd.date_range(s.index.min(), s.index.max(), freq='D')
+    s = s.reindex(full_index)
+    is_dry = (s == 0)  # NaN -> False, so unknown days break the streak
+    # Assign a group id that increments every time the streak breaks
+    groups = (~is_dry).cumsum()
+    dry_runs = is_dry.groupby(groups).sum()
+    if dry_runs.max() == 0:
+        return 0, None, None
+    best_group = dry_runs.idxmax()
+    run_days = s.index[(groups == best_group) & is_dry]
+    return len(run_days), run_days.min(), run_days.max()
+
+# Hottest day (by daily maximum temperature)
+hot_row = df_filtered.loc[df_filtered['HighTemp'].idxmax()]
+# Coldest day (by daily minimum temperature)
+cold_row = df_filtered.loc[df_filtered['LowTemp'].idxmin()]
+# Rainiest day
+rain_valid = df_filtered.dropna(subset=['Rain_mm'])
+wet_row = rain_valid.loc[rain_valid['Rain_mm'].idxmax()] if not rain_valid.empty else None
+# Longest dry spell
+dry_len, dry_start, dry_end = longest_dry_spell(df_filtered)
+
+rec1, rec2, rec3, rec4 = st.columns(4)
+with rec1:
+    st.metric(
+        "🔥 Hottest day",
+        f"{hot_row['HighTemp']:.1f} °C",
+        help=f"Time of maximum: {hot_row.get('HighTime', '—')}"
+    )
+    st.caption(hot_row['Date'].strftime('%d %b %Y'))
+with rec2:
+    st.metric(
+        "🥶 Coldest day",
+        f"{cold_row['LowTemp']:.1f} °C",
+        help=f"Time of minimum: {cold_row.get('LowTime', '—')}"
+    )
+    st.caption(cold_row['Date'].strftime('%d %b %Y'))
+with rec3:
+    if wet_row is not None:
+        st.metric("🌧️ Rainiest day", f"{wet_row['Rain_mm']:.1f} mm")
+        st.caption(wet_row['Date'].strftime('%d %b %Y'))
+    else:
+        st.metric("🌧️ Rainiest day", "—")
+with rec4:
+    st.metric("☀️ Longest dry spell", f"{dry_len} days")
+    if dry_start is not None:
+        st.caption(f"{dry_start.strftime('%d %b %Y')} → {dry_end.strftime('%d %b %Y')}")
+
+st.caption(
+    "Note: the dry-spell calculation counts consecutive calendar days with 0 mm of rain. "
+    "Days with missing rain data (70 days, 2008–2011) or dates absent from the dataset "
+    "break the streak, so the record is a conservative lower bound."
+)
+
+# ------------------------------------------------------------
 # Extremes
 # ------------------------------------------------------------
 st.header("🏆 Extremes")
