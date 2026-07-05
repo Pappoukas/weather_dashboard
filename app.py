@@ -1,13 +1,13 @@
 """
-Weather Dashboard for Kastoria (2008-2026)
-Interactive visualizations for temperature, precipitation, wind, and extremes.
+Μετεωρολογικός πίνακας Καστοριάς (2008-2026)
+Διαδραστικές οπτικοποιήσεις θερμοκρασίας, βροχόπτωσης, ανέμου και ακραίων τιμών.
 
-Station: Kastoria (LGC0), elevation 623 m.
-Initially located at the Makedni Town Hall; relocated within the city of
-Kastoria on 2010-12-08 (same elevation, anemometer raised from 3 m to 5 m).
-Data begin September 2008. Known data-quality issues (documented by the
-station operator) are encoded in KNOWN_RAIN_ISSUES / KNOWN_WIND_ISSUES below
-and are surfaced throughout the dashboard.
+Σταθμός: Καστοριά (LGC0), υψόμετρο 623 m.
+Αρχικά στο Δημαρχείο Μακεδνών· μετεγκαταστάθηκε εντός της πόλης της Καστοριάς
+στις 08/12/2010 (ίδιο υψόμετρο, ανεμόμετρο από 3 m σε 5 m).
+Τα δεδομένα ξεκινούν τον Σεπτέμβριο του 2008. Τα γνωστά προβλήματα ποιότητας
+(από το ημερολόγιο βλαβών του σταθμού) είναι κωδικοποιημένα στα
+KNOWN_RAIN_ISSUES / KNOWN_WIND_ISSUES και εμφανίζονται σε όλο το dashboard.
 """
 
 import numpy as np
@@ -18,58 +18,82 @@ import streamlit as st
 from plotly.subplots import make_subplots
 
 # ------------------------------------------------------------
-# Page configuration
+# Ρυθμίσεις σελίδας
 # ------------------------------------------------------------
-st.set_page_config(page_title="Kastoria Weather Dashboard", layout="wide")
-st.title("🌤️ Kastoria Weather Dashboard (2008–2026)")
+st.set_page_config(page_title="Μετεωρολογικός Πίνακας Καστοριάς", layout="wide")
+st.title("🌤️ Μετεωρολογικός Πίνακας Καστοριάς (2008–2026)")
 
 STATION_RELOCATION = pd.Timestamp("2010-12-08")
 
-# Known periods with lost / partial rainfall data (from the station log).
-# (start, end, approx mm lost or None if unknown, note)
+GR_MONTHS = ["", "Ιαν", "Φεβ", "Μάρ", "Απρ", "Μάι", "Ιούν",
+             "Ιούλ", "Αύγ", "Σεπ", "Οκτ", "Νοέ", "Δεκ"]
+GR_MONTHS_FULL = ["", "Ιανουάριος", "Φεβρουάριος", "Μάρτιος", "Απρίλιος",
+                  "Μάιος", "Ιούνιος", "Ιούλιος", "Αύγουστος", "Σεπτέμβριος",
+                  "Οκτώβριος", "Νοέμβριος", "Δεκέμβριος"]
+
+VAR_LABELS = {
+    "MeanTemp": "Μέση θερμοκρασία (°C)",
+    "HighTemp": "Μέγιστη θερμοκρασία (°C)",
+    "LowTemp": "Ελάχιστη θερμοκρασία (°C)",
+    "Rain_mm": "Βροχόπτωση (mm)",
+    "AvgWindSpeed_kmh": "Μέση ταχύτητα ανέμου (km/h)",
+}
+
+
+def fmt_date(d, with_year=True):
+    """Μορφοποίηση ημερομηνίας στα ελληνικά, π.χ. '22 Ιούλ 2025'."""
+    if pd.isna(d):
+        return "—"
+    d = pd.Timestamp(d)
+    return (f"{d.day} {GR_MONTHS[d.month]} {d.year}" if with_year
+            else f"{d.day} {GR_MONTHS[d.month]}")
+
+
+# Γνωστές περίοδοι με απώλειες / μερικές καταγραφές βροχόπτωσης (ημερολόγιο σταθμού).
+# (έναρξη, λήξη, εκτιμώμενα χαμένα mm ή None, σημείωση)
 KNOWN_RAIN_ISSUES = [
-    ("2008-09-01", "2008-09-15", None, "All rainfall lost from start of operation"),
-    ("2009-01-22", "2009-01-23", None, "Partial recording (technical problem)"),
-    ("2009-08-05", "2009-08-07", None, "Rainfall data lost"),
-    ("2009-08-24", "2009-08-26", None, "Rainfall data lost"),
-    ("2009-10-24", "2009-12-19", None, "Rainfall data lost (extended outage)"),
-    ("2010-03-07", "2010-03-08", None, "Partial snowfall recording"),
-    ("2010-05-24", "2010-05-24", None, "Partial rainfall recording"),
-    ("2010-09-11", "2010-09-11", None, "Partial rainfall recording"),
-    ("2010-09-25", "2010-10-06", None, "Rainfall data lost"),
-    ("2011-11-11", "2011-11-12", None, "Rainfall data lost"),
-    ("2012-09-14", "2012-09-15", None, "Partial rainfall loss"),
-    ("2012-10-14", "2012-10-14", None, "Partial rainfall loss"),
-    ("2013-05-08", "2013-05-08", None, "Partial rainfall loss"),
-    ("2014-04-05", "2014-04-06", None, "Partial / delayed rainfall recording"),
-    ("2015-05-31", "2015-06-01", None, "Partial / delayed rainfall recording"),
-    ("2016-09-01", "2016-09-01", 15, "Significant rainfall loss"),
-    ("2016-10-10", "2016-10-12", 5, "Partial / delayed rainfall recording"),
-    ("2018-05-01", "2018-05-08", 35, "Partial / delayed rainfall recording"),
-    ("2018-06-13", "2018-06-15", 10, "Partial / delayed rainfall recording"),
-    ("2018-06-26", "2018-06-28", 105, "Major loss (~60+20+25 mm)"),
-    ("2018-11-16", "2018-11-17", 12, "Rainfall data lost"),
-    ("2019-09-19", "2019-09-26", 20, "Rainfall data lost"),
-    ("2019-10-04", "2019-10-04", 20, "Rainfall data lost"),
-    ("2020-09-22", "2020-09-29", 45, "Rainfall data lost on several days"),
-    ("2021-11-22", "2021-11-24", 8, "Partial / delayed rainfall recording"),
-    ("2022-09-17", "2022-09-30", 15, "Rainfall data lost"),
-    ("2022-10-01", "2022-10-14", 30, "Rainfall data lost"),
-    ("2022-12-14", "2022-12-15", 5, "Partial / delayed rainfall recording"),
-    ("2023-01-09", "2023-01-10", 15, "Partial / delayed rainfall recording"),
-    ("2023-07-02", "2023-07-05", 10, "Rainfall data lost (2/7 and 5/7)"),
-    ("2024-05-19", "2024-05-28", 5, "Data outage 18-31/05"),
-    ("2025-04-07", "2025-04-07", None, "Delayed snowfall recording"),
+    ("2008-09-01", "2008-09-15", None, "Απώλεια όλης της βροχόπτωσης από την έναρξη λειτουργίας"),
+    ("2009-01-22", "2009-01-23", None, "Μερική καταγραφή (τεχνικό πρόβλημα)"),
+    ("2009-08-05", "2009-08-07", None, "Απώλεια δεδομένων βροχόπτωσης"),
+    ("2009-08-24", "2009-08-26", None, "Απώλεια δεδομένων βροχόπτωσης"),
+    ("2009-10-24", "2009-12-19", None, "Απώλεια δεδομένων βροχόπτωσης (παρατεταμένη βλάβη)"),
+    ("2010-03-07", "2010-03-08", None, "Μερική καταγραφή χιονόπτωσης"),
+    ("2010-05-24", "2010-05-24", None, "Μερική καταγραφή βροχόπτωσης"),
+    ("2010-09-11", "2010-09-11", None, "Μερική καταγραφή βροχόπτωσης"),
+    ("2010-09-25", "2010-10-06", None, "Απώλεια δεδομένων βροχόπτωσης"),
+    ("2011-11-11", "2011-11-12", None, "Απώλεια δεδομένων βροχόπτωσης"),
+    ("2012-09-14", "2012-09-15", None, "Μερική απώλεια βροχόπτωσης"),
+    ("2012-10-14", "2012-10-14", None, "Μερική απώλεια βροχόπτωσης"),
+    ("2013-05-08", "2013-05-08", None, "Μερική απώλεια βροχόπτωσης"),
+    ("2014-04-05", "2014-04-06", None, "Μερική / καθυστερημένη καταγραφή"),
+    ("2015-05-31", "2015-06-01", None, "Μερική / καθυστερημένη καταγραφή"),
+    ("2016-09-01", "2016-09-01", 15, "Σημαντική απώλεια βροχόπτωσης"),
+    ("2016-10-10", "2016-10-12", 5, "Μερική / καθυστερημένη καταγραφή"),
+    ("2018-05-01", "2018-05-08", 35, "Μερική / καθυστερημένη καταγραφή"),
+    ("2018-06-13", "2018-06-15", 10, "Μερική / καθυστερημένη καταγραφή"),
+    ("2018-06-26", "2018-06-28", 105, "Μεγάλη απώλεια (~60+20+25 mm)"),
+    ("2018-11-16", "2018-11-17", 12, "Απώλεια δεδομένων βροχόπτωσης"),
+    ("2019-09-19", "2019-09-26", 20, "Απώλεια δεδομένων βροχόπτωσης"),
+    ("2019-10-04", "2019-10-04", 20, "Απώλεια δεδομένων βροχόπτωσης"),
+    ("2020-09-22", "2020-09-29", 45, "Απώλεια βροχόπτωσης σε πολλές ημέρες"),
+    ("2021-11-22", "2021-11-24", 8, "Μερική / καθυστερημένη καταγραφή"),
+    ("2022-09-17", "2022-09-30", 15, "Απώλεια δεδομένων βροχόπτωσης"),
+    ("2022-10-01", "2022-10-14", 30, "Απώλεια δεδομένων βροχόπτωσης"),
+    ("2022-12-14", "2022-12-15", 5, "Μερική / καθυστερημένη καταγραφή"),
+    ("2023-01-09", "2023-01-10", 15, "Μερική / καθυστερημένη καταγραφή"),
+    ("2023-07-02", "2023-07-05", 10, "Απώλεια βροχόπτωσης (2/7 και 5/7)"),
+    ("2024-05-19", "2024-05-28", 5, "Διακοπή δεδομένων 18–31/05"),
+    ("2025-04-07", "2025-04-07", None, "Καθυστερημένη καταγραφή χιονόπτωσης"),
 ]
 
-# Known periods with lost or underestimated wind data.
+# Γνωστές περίοδοι με απώλειες ή υποεκτίμηση δεδομένων ανέμου.
 KNOWN_WIND_ISSUES = [
-    ("2008-10-15", "2008-10-15", "Wind data lost"),
-    ("2011-09-17", "2011-09-28", "Wind data lost"),
-    ("2012-05-26", "2012-05-26", "Wind data lost"),
-    ("2013-09-01", "2013-09-17", "Wind data lost"),
-    ("2018-03-01", "2018-06-01", "Wind speed underestimated"),
-    ("2021-09-01", "2021-10-04", "Wind speed underestimated"),
+    ("2008-10-15", "2008-10-15", "Απώλεια δεδομένων ανέμου"),
+    ("2011-09-17", "2011-09-28", "Απώλεια δεδομένων ανέμου"),
+    ("2012-05-26", "2012-05-26", "Απώλεια δεδομένων ανέμου"),
+    ("2013-09-01", "2013-09-17", "Απώλεια δεδομένων ανέμου"),
+    ("2018-03-01", "2018-06-01", "Υποεκτίμηση ταχύτητας ανέμου"),
+    ("2021-09-01", "2021-10-04", "Υποεκτίμηση ταχύτητας ανέμου"),
 ]
 
 RAIN_ISSUE_INTERVALS = [
@@ -82,7 +106,7 @@ WIND_DIRS = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
 
 
 # ------------------------------------------------------------
-# Load data with caching
+# Φόρτωση δεδομένων με cache
 # ------------------------------------------------------------
 @st.cache_data
 def load_data(file_path):
@@ -99,26 +123,27 @@ def load_data(file_path):
     return df
 
 
-uploaded_file = st.sidebar.file_uploader("Upload your CSV file", type=["csv"])
+uploaded_file = st.sidebar.file_uploader("Ανεβάστε αρχείο CSV", type=["csv"])
 if uploaded_file is not None:
     df = load_data(uploaded_file)
 else:
     try:
         df = load_data("kastoria_daily_all_years.csv")
-        st.sidebar.success("Loaded default file: kastoria_daily_all_years.csv")
+        st.sidebar.success("Φορτώθηκε το αρχείο: kastoria_daily_all_years.csv")
     except FileNotFoundError:
-        st.error("Please upload the CSV file or place it in the same directory "
-                 "as 'kastoria_daily_all_years.csv'.")
+        st.error("Ανεβάστε το αρχείο CSV ή τοποθετήστε το στον ίδιο φάκελο "
+                 "με όνομα 'kastoria_daily_all_years.csv'.")
         st.stop()
 
 # ------------------------------------------------------------
-# Helper functions
+# Βοηθητικές συναρτήσεις
 # ------------------------------------------------------------
 def find_streaks(dates, condition, min_length=1):
     """
-    Given a boolean Series indexed by consecutive calendar dates, return a
-    DataFrame of streaks (start, end, length) where the condition holds for
-    at least `min_length` consecutive days. Missing days break streaks.
+    Δέχεται boolean Series με ευρετήριο συνεχόμενες ημερολογιακές ημέρες και
+    επιστρέφει DataFrame με τα σερί (έναρξη, λήξη, διάρκεια) όπου η συνθήκη
+    ισχύει για τουλάχιστον `min_length` συνεχόμενες ημέρες.
+    Ημέρες που λείπουν διακόπτουν το σερί.
     """
     s = condition.reindex(pd.date_range(dates.min(), dates.max(), freq="D"),
                           fill_value=False)
@@ -126,16 +151,16 @@ def find_streaks(dates, condition, min_length=1):
     out = []
     for g, run in s[s].groupby(groups[s]):
         if len(run) >= min_length:
-            out.append({"Start": run.index.min(), "End": run.index.max(),
-                        "Days": len(run)})
+            out.append({"Έναρξη": run.index.min(), "Λήξη": run.index.max(),
+                        "Ημέρες": len(run)})
     return pd.DataFrame(out)
 
 
 def longest_dry_spell(data):
     """
-    (length, start, end) of the longest run of consecutive CALENDAR days with
-    Rain_mm == 0. Missing rain values (NaN) or dates absent from the dataset
-    break the streak, so gaps cannot inflate the result.
+    (διάρκεια, έναρξη, λήξη) του μεγαλύτερου σερί συνεχόμενων ΗΜΕΡΟΛΟΓΙΑΚΩΝ
+    ημερών με Rain_mm == 0. Κενές τιμές (NaN) ή ημερομηνίες που λείπουν από
+    το αρχείο διακόπτουν το σερί, ώστε τα κενά να μη διογκώνουν το ρεκόρ.
     """
     s = data.set_index("Date")["Rain_mm"]
     s = s.reindex(pd.date_range(s.index.min(), s.index.max(), freq="D"))
@@ -143,12 +168,12 @@ def longest_dry_spell(data):
     streaks = find_streaks(s.index.to_series(), is_dry)
     if streaks.empty:
         return 0, None, None
-    best = streaks.loc[streaks["Days"].idxmax()]
-    return int(best["Days"]), best["Start"], best["End"]
+    best = streaks.loc[streaks["Ημέρες"].idxmax()]
+    return int(best["Ημέρες"]), best["Έναρξη"], best["Λήξη"]
 
 
 def rain_issues_overlapping(start, end):
-    """Return known rain-data issues overlapping the interval [start, end]."""
+    """Γνωστά προβλήματα βροχομετρικών δεδομένων που τέμνουν το [start, end]."""
     if start is None or end is None:
         return []
     return [(s, e, mm, note) for s, e, mm, note in RAIN_ISSUE_INTERVALS
@@ -156,13 +181,13 @@ def rain_issues_overlapping(start, end):
 
 
 # ------------------------------------------------------------
-# Sidebar filters
+# Φίλτρα (sidebar)
 # ------------------------------------------------------------
-st.sidebar.header("Filters")
+st.sidebar.header("Φίλτρα")
 min_date = df["Date"].min().date()
 max_date = df["Date"].max().date()
 date_range = st.sidebar.date_input(
-    "Date range", value=(min_date, max_date),
+    "Εύρος ημερομηνιών", value=(min_date, max_date),
     min_value=min_date, max_value=max_date,
 )
 if len(date_range) == 2:
@@ -173,31 +198,32 @@ else:
     df_filtered = df.copy()
 
 vars_for_plot = st.sidebar.multiselect(
-    "Variables to display in time series",
-    options=["MeanTemp", "HighTemp", "LowTemp", "Rain_mm", "AvgWindSpeed_kmh"],
+    "Μεταβλητές χρονοσειράς",
+    options=list(VAR_LABELS.keys()),
     default=["MeanTemp", "HighTemp", "LowTemp"],
+    format_func=lambda v: VAR_LABELS[v],
 )
 
 # ------------------------------------------------------------
-# Overview statistics
+# Συνοπτικά στατιστικά
 # ------------------------------------------------------------
-st.header("📊 Overview Statistics")
+st.header("📊 Συνοπτικά Στατιστικά")
 col1, col2, col3, col4 = st.columns(4)
 with col1:
-    st.metric("Mean Temperature", f"{df_filtered['MeanTemp'].mean():.1f} °C")
+    st.metric("Μέση θερμοκρασία", f"{df_filtered['MeanTemp'].mean():.1f} °C")
 with col2:
-    st.metric("Total Rain", f"{df_filtered['Rain_mm'].sum():.1f} mm",
-              help="Recorded total; known gaps mean the true total is higher "
-                   "(see Data Quality section).")
+    st.metric("Συνολική βροχόπτωση", f"{df_filtered['Rain_mm'].sum():.1f} mm",
+              help="Καταγεγραμμένο σύνολο· λόγω γνωστών βλαβών το πραγματικό "
+                   "είναι υψηλότερο (βλ. ενότητα Ποιότητα Δεδομένων).")
 with col3:
-    st.metric("Max Wind Gust", f"{df_filtered['MaxWindSpeed_kmh'].max():.1f} km/h")
+    st.metric("Μέγιστη ριπή ανέμου", f"{df_filtered['MaxWindSpeed_kmh'].max():.1f} km/h")
 with col4:
-    st.metric("Days with Rain > 1 mm", f"{(df_filtered['Rain_mm'] > 1).sum()}")
+    st.metric("Ημέρες με βροχή > 1 mm", f"{(df_filtered['Rain_mm'] > 1).sum()}")
 
 # ------------------------------------------------------------
-# All-time records (within selected date range)
+# Ρεκόρ (εντός του επιλεγμένου εύρους ημερομηνιών)
 # ------------------------------------------------------------
-st.header("🏅 Records")
+st.header("🏅 Ρεκόρ")
 
 hot_row = df_filtered.loc[df_filtered["HighTemp"].idxmax()]
 cold_row = df_filtered.loc[df_filtered["LowTemp"].idxmin()]
@@ -207,220 +233,272 @@ dry_len, dry_start, dry_end = longest_dry_spell(df_filtered)
 
 rec1, rec2, rec3, rec4 = st.columns(4)
 with rec1:
-    st.metric("🔥 Hottest day", f"{hot_row['HighTemp']:.1f} °C",
-              help=f"Time of maximum: {hot_row.get('HighTime', '—')}")
-    st.caption(hot_row["Date"].strftime("%d %b %Y"))
+    st.metric("🔥 Θερμότερη μέρα", f"{hot_row['HighTemp']:.1f} °C",
+              help=f"Ώρα μεγίστου: {hot_row.get('HighTime', '—')}")
+    st.caption(fmt_date(hot_row["Date"]))
 with rec2:
-    st.metric("🥶 Coldest day", f"{cold_row['LowTemp']:.1f} °C",
-              help=f"Time of minimum: {cold_row.get('LowTime', '—')}")
-    st.caption(cold_row["Date"].strftime("%d %b %Y"))
+    st.metric("🥶 Ψυχρότερη μέρα", f"{cold_row['LowTemp']:.1f} °C",
+              help=f"Ώρα ελαχίστου: {cold_row.get('LowTime', '—')}")
+    st.caption(fmt_date(cold_row["Date"]))
 with rec3:
     if wet_row is not None:
-        st.metric("🌧️ Rainiest day", f"{wet_row['Rain_mm']:.1f} mm")
-        st.caption(wet_row["Date"].strftime("%d %b %Y"))
+        st.metric("🌧️ Βροχερότερη μέρα", f"{wet_row['Rain_mm']:.1f} mm")
+        st.caption(fmt_date(wet_row["Date"]))
     else:
-        st.metric("🌧️ Rainiest day", "—")
+        st.metric("🌧️ Βροχερότερη μέρα", "—")
 with rec4:
-    st.metric("☀️ Longest dry spell", f"{dry_len} days")
+    st.metric("☀️ Μεγαλύτερη ανομβρία", f"{dry_len} ημέρες")
     if dry_start is not None:
-        st.caption(f"{dry_start.strftime('%d %b %Y')} → {dry_end.strftime('%d %b %Y')}")
+        st.caption(f"{fmt_date(dry_start)} → {fmt_date(dry_end)}")
 
-# Reliability checks against the station's known-issues log
+# Έλεγχος αξιοπιστίας έναντι του ημερολογίου βλαβών του σταθμού
 dry_overlaps = rain_issues_overlapping(dry_start, dry_end)
 if dry_overlaps:
     st.warning(
-        "⚠️ The longest dry spell overlaps a period with known rainfall data "
-        "losses, so it may be an artifact of missing data: "
-        + "; ".join(f"{s.date()}–{e.date()} ({note})" for s, e, mm, note in dry_overlaps)
+        "⚠️ Η μεγαλύτερη ανομβρία επικαλύπτεται με περίοδο γνωστών απωλειών "
+        "βροχομετρικών δεδομένων και μπορεί να είναι τεχνούργημα ελλιπών "
+        "δεδομένων: "
+        + "· ".join(f"{fmt_date(s)}–{fmt_date(e)} ({note})"
+                    for s, e, mm, note in dry_overlaps)
     )
 st.caption(
-    "The rainiest-day record reflects *recorded* rainfall. Note that on "
-    "26/06/2018 approximately 60 mm went unrecorded due to a sensor fault, "
-    "so the true daily record may differ. Dry spells are counted as "
-    "consecutive calendar days with 0 mm; missing days or missing values "
-    "break the streak (conservative lower bound)."
+    "Το ρεκόρ βροχερότερης μέρας αφορά την *καταγεγραμμένη* βροχόπτωση. "
+    "Σημειώνεται ότι στις 26/06/2018 δεν καταγράφηκαν περίπου 60 mm λόγω "
+    "βλάβης αισθητήρα, οπότε το πραγματικό ημερήσιο ρεκόρ μπορεί να διαφέρει. "
+    "Η ανομβρία μετρά συνεχόμενες ημερολογιακές ημέρες με 0 mm· ημέρες που "
+    "λείπουν ή έχουν κενή τιμή διακόπτουν το σερί (συντηρητικό κάτω όριο)."
 )
 
 # ------------------------------------------------------------
-# Time series
+# Χρονοσειρές
 # ------------------------------------------------------------
-st.header("📈 Time Series Evolution")
+st.header("📈 Χρονική Εξέλιξη")
 if vars_for_plot:
     fig = px.line(df_filtered, x="Date", y=vars_for_plot,
-                  title="Daily Weather Variables",
-                  labels={"value": "Value", "Date": ""},
+                  title="Ημερήσιες μεταβλητές",
+                  labels={"value": "Τιμή", "Date": "", "variable": "Μεταβλητή"},
                   color_discrete_sequence=px.colors.qualitative.Set1)
+    fig.for_each_trace(lambda t: t.update(name=VAR_LABELS.get(t.name, t.name)))
     st.plotly_chart(fig, width='stretch')
 else:
-    st.info("Select at least one variable in the sidebar.")
+    st.info("Επιλέξτε τουλάχιστον μία μεταβλητή από το πλαϊνό μενού.")
 
-st.subheader("🌧️ Daily Precipitation")
+st.subheader("🌧️ Ημερήσια Βροχόπτωση")
 fig_rain = px.bar(df_filtered, x="Date", y="Rain_mm",
-                  title="Daily Rainfall (mm)",
-                  labels={"Rain_mm": "Rain (mm)", "Date": ""},
+                  title="Ημερήσια βροχόπτωση (mm)",
+                  labels={"Rain_mm": "Βροχή (mm)", "Date": ""},
                   color_discrete_sequence=["#1f77b4"])
 st.plotly_chart(fig_rain, width='stretch')
 
 # ------------------------------------------------------------
-# Extremes (top-10 tables)
+# Ακραίες τιμές (πίνακες top-10)
 # ------------------------------------------------------------
-st.header("🏆 Extremes")
-tab1, tab2, tab3 = st.tabs(["Hottest Days", "Coldest Days", "Rainiest Days"])
+st.header("🏆 Ακραίες Τιμές")
+tab1, tab2, tab3 = st.tabs(["Θερμότερες ημέρες", "Ψυχρότερες ημέρες",
+                            "Βροχερότερες ημέρες"])
+
+GR_COLS = {"Date": "Ημερομηνία", "HighTemp": "Μέγιστη (°C)",
+           "MeanTemp": "Μέση (°C)", "LowTemp": "Ελάχιστη (°C)",
+           "Rain_mm": "Βροχή (mm)"}
 
 with tab1:
-    hottest = df_filtered.nlargest(10, "HighTemp")[["Date", "HighTemp", "MeanTemp", "LowTemp"]]
-    st.dataframe(hottest.style.highlight_max(subset=["HighTemp"], color="salmon"))
-    fig_hot = px.bar(hottest.sort_values("HighTemp"), x="HighTemp", y="Date",
-                     orientation="h", title="Top 10 Hottest Days (by daily maximum)")
-    st.plotly_chart(fig_hot, width='stretch')
+    hottest = df_filtered.nlargest(10, "HighTemp")[
+        ["Date", "HighTemp", "MeanTemp", "LowTemp"]].copy()
+    hottest["Date"] = hottest["Date"].apply(fmt_date)
+    st.dataframe(hottest.rename(columns=GR_COLS).style
+                 .highlight_max(subset=["Μέγιστη (°C)"], color="salmon"))
+
+    # Πίτα: σε ποια έτη πέφτουν οι 20 θερμότερες ημέρες της περιόδου
+    top20 = df_filtered.nlargest(20, "HighTemp")
+    per_year = top20.groupby("Year").size().reset_index(name="Ημέρες")
+    per_year["Έτος"] = per_year["Year"].astype(str)
+    fig_pie = px.pie(per_year, values="Ημέρες", names="Έτος",
+                     title="Κατανομή των 20 θερμότερων ημερών ανά έτος",
+                     hole=0.35)
+    fig_pie.update_traces(textinfo="label+value+percent",
+                          hovertemplate="%{label}: %{value} ημέρες (%{percent})")
+    st.plotly_chart(fig_pie, width='stretch')
+    st.caption(
+        "Η πίτα δείχνει πόσες από τις 20 θερμότερες ημέρες της επιλεγμένης "
+        "περιόδου ανήκουν σε κάθε έτος — η συγκέντρωση στα πρόσφατα έτη "
+        "αποτυπώνει τη θερμική τάση με μια ματιά."
+    )
 
 with tab2:
-    coldest = df_filtered.nsmallest(10, "LowTemp")[["Date", "LowTemp", "MeanTemp", "HighTemp"]]
-    st.dataframe(coldest.style.highlight_min(subset=["LowTemp"], color="lightblue"))
-    fig_cold = px.bar(coldest.sort_values("LowTemp", ascending=False),
-                      x="LowTemp", y="Date", orientation="h",
-                      title="Top 10 Coldest Days (by daily minimum)")
+    coldest = df_filtered.nsmallest(10, "LowTemp")[
+        ["Date", "LowTemp", "MeanTemp", "HighTemp"]].copy()
+    coldest["Date"] = coldest["Date"].apply(fmt_date)
+    st.dataframe(coldest.rename(columns=GR_COLS).style
+                 .highlight_min(subset=["Ελάχιστη (°C)"], color="lightblue"))
+    cold_plot = coldest.rename(columns=GR_COLS).sort_values(
+        "Ελάχιστη (°C)", ascending=False)
+    fig_cold = px.bar(cold_plot, x="Ελάχιστη (°C)", y="Ημερομηνία",
+                      orientation="h",
+                      title="Οι 10 ψυχρότερες ημέρες (κατά ελάχιστη)")
+    fig_cold.update_yaxes(type="category")
     st.plotly_chart(fig_cold, width='stretch')
 
 with tab3:
-    rainiest = df_filtered.nlargest(10, "Rain_mm")[["Date", "Rain_mm", "MeanTemp"]]
-    st.dataframe(rainiest.style.highlight_max(subset=["Rain_mm"], color="lightgreen"))
-    fig_rainiest = px.bar(rainiest.sort_values("Rain_mm"), x="Rain_mm", y="Date",
-                          orientation="h", title="Top 10 Rainiest Days (recorded)")
+    rainiest = df_filtered.nlargest(10, "Rain_mm")[
+        ["Date", "Rain_mm", "MeanTemp"]].copy()
+    rainiest["Date"] = rainiest["Date"].apply(fmt_date)
+    st.dataframe(rainiest.rename(columns=GR_COLS).style
+                 .highlight_max(subset=["Βροχή (mm)"], color="lightgreen"))
+    rain_plot = rainiest.rename(columns=GR_COLS).sort_values("Βροχή (mm)")
+    fig_rainiest = px.bar(rain_plot, x="Βροχή (mm)", y="Ημερομηνία",
+                          orientation="h",
+                          title="Οι 10 βροχερότερες ημέρες (καταγεγραμμένες)")
+    fig_rainiest.update_yaxes(type="category")
     st.plotly_chart(fig_rainiest, width='stretch')
 
 # ------------------------------------------------------------
-# Climate indices & trend (complete years only)
+# Κλιματικοί δείκτες & τάση (μόνο πλήρη έτη)
 # ------------------------------------------------------------
-st.header("🌍 Climate Indices & Trend")
+st.header("🌍 Κλιματικοί Δείκτες & Τάση")
 
 complete_years = [y for y, n in df.groupby("Year").size().items() if n >= 330]
 df_cy = df[df["Year"].isin(complete_years)]
 st.caption(
-    f"Computed on (nearly) complete years only: {min(complete_years)}–{max(complete_years)}. "
-    "Partial years (2008 starts in September; 2026 ends in February) are excluded "
-    "so annual counts and trends are comparable."
+    f"Υπολογίζονται μόνο στα (σχεδόν) πλήρη έτη: {min(complete_years)}–{max(complete_years)}. "
+    "Τα μερικά έτη (το 2008 ξεκινά τον Σεπτέμβριο, το 2026 φτάνει έως τον "
+    "Φεβρουάριο) εξαιρούνται ώστε οι ετήσιες τιμές να είναι συγκρίσιμες."
 )
 
 indices = df_cy.groupby("Year").agg(
-    HotDays=("HighTemp", lambda s: (s >= 35).sum()),
-    SummerDays=("HighTemp", lambda s: (s >= 25).sum()),
-    TropicalNights=("LowTemp", lambda s: (s >= 20).sum()),
-    FrostDays=("LowTemp", lambda s: (s < 0).sum()),
-    IceDays=("HighTemp", lambda s: (s < 0).sum()),
-    MeanTemp=("MeanTemp", "mean"),
-).reset_index()
+    Καύσωνες=("HighTemp", lambda s: (s >= 35).sum()),
+    Θερινές=("HighTemp", lambda s: (s >= 25).sum()),
+    Τροπικές_νύχτες=("LowTemp", lambda s: (s >= 20).sum()),
+    Παγετός=("LowTemp", lambda s: (s < 0).sum()),
+    Ολικός_παγετός=("HighTemp", lambda s: (s < 0).sum()),
+    Μέση=("MeanTemp", "mean"),
+).reset_index().rename(columns={"Year": "Έτος"})
 
 ic1, ic2 = st.columns(2)
 with ic1:
-    fig_idx_warm = px.line(indices, x="Year", y=["HotDays", "TropicalNights"],
-                           markers=True,
-                           title="Warm indices per year (Hot days ≥35 °C, Tropical nights ≥20 °C)",
-                           labels={"value": "Days", "Year": ""})
+    fig_idx_warm = px.line(
+        indices, x="Έτος", y=["Καύσωνες", "Τροπικές_νύχτες"], markers=True,
+        title="Θερμοί δείκτες ανά έτος (Ημέρες ≥35 °C, Τροπικές νύχτες ≥20 °C)",
+        labels={"value": "Ημέρες", "Έτος": "", "variable": "Δείκτης"})
+    fig_idx_warm.for_each_trace(
+        lambda t: t.update(name=t.name.replace("_", " ")))
     st.plotly_chart(fig_idx_warm, width='stretch')
 with ic2:
-    fig_idx_cold = px.line(indices, x="Year", y=["FrostDays", "IceDays"],
-                           markers=True,
-                           title="Cold indices per year (Frost days Tmin<0 °C, Ice days Tmax<0 °C)",
-                           labels={"value": "Days", "Year": ""})
+    fig_idx_cold = px.line(
+        indices, x="Έτος", y=["Παγετός", "Ολικός_παγετός"], markers=True,
+        title="Ψυχροί δείκτες ανά έτος (Παγετός Tmin<0 °C, Ολικός παγετός Tmax<0 °C)",
+        labels={"value": "Ημέρες", "Έτος": "", "variable": "Δείκτης"})
+    fig_idx_cold.for_each_trace(
+        lambda t: t.update(name=t.name.replace("_", " ")))
     st.plotly_chart(fig_idx_cold, width='stretch')
 
-# Annual mean temperature with linear trend
-x = indices["Year"].to_numpy(dtype=float)
-y = indices["MeanTemp"].to_numpy(dtype=float)
+# Ετήσια μέση θερμοκρασία με γραμμική τάση
+x = indices["Έτος"].to_numpy(dtype=float)
+y = indices["Μέση"].to_numpy(dtype=float)
 slope, intercept = np.polyfit(x, y, 1)
 trend_y = slope * x + intercept
 
 fig_trend = go.Figure()
-fig_trend.add_trace(go.Scatter(x=indices["Year"], y=indices["MeanTemp"],
-                               mode="lines+markers", name="Annual mean temp"))
-fig_trend.add_trace(go.Scatter(x=indices["Year"], y=trend_y, mode="lines",
-                               name=f"Trend: {slope*10:+.2f} °C / decade",
+fig_trend.add_trace(go.Scatter(x=indices["Έτος"], y=indices["Μέση"],
+                               mode="lines+markers",
+                               name="Ετήσια μέση θερμοκρασία"))
+fig_trend.add_trace(go.Scatter(x=indices["Έτος"], y=trend_y, mode="lines",
+                               name=f"Τάση: {slope*10:+.2f} °C / δεκαετία",
                                line=dict(dash="dash", color="firebrick")))
-fig_trend.update_layout(title="Annual Mean Temperature & Linear Trend",
+fig_trend.update_layout(title="Ετήσια Μέση Θερμοκρασία & Γραμμική Τάση",
                         yaxis_title="°C")
 st.plotly_chart(fig_trend, width='stretch')
 st.caption(
-    "⚠️ Homogeneity caveat: the station was relocated within Kastoria on "
-    "08/12/2010 (same elevation). Trends spanning that date mix two siting "
-    "environments and should be interpreted with caution."
+    "⚠️ Επιφύλαξη ομοιογένειας: ο σταθμός μετεγκαταστάθηκε εντός της Καστοριάς "
+    "στις 08/12/2010 (ίδιο υψόμετρο). Οι τάσεις που εκτείνονται πέρα από αυτή "
+    "την ημερομηνία αναμειγνύουν δύο θέσεις μέτρησης και χρειάζονται προσοχή "
+    "στην ερμηνεία."
 )
 
 # ------------------------------------------------------------
-# Heatwaves & cold spells
+# Καύσωνες & ψυχρές εισβολές
 # ------------------------------------------------------------
-st.header("🌡️ Heatwaves & Cold Spells")
+st.header("🌡️ Καύσωνες & Ψυχρές Εισβολές")
 hw1, hw2 = st.columns(2)
 with hw1:
-    heat_thresh = st.slider("Heatwave threshold: daily max ≥ (°C)", 30, 42, 35)
-    heat_days = st.slider("Minimum consecutive days (heatwave)", 2, 7, 3)
+    heat_thresh = st.slider("Όριο καύσωνα: ημερήσια μέγιστη ≥ (°C)", 30, 42, 35)
+    heat_days = st.slider("Ελάχιστες συνεχόμενες ημέρες (καύσωνας)", 2, 7, 3)
 with hw2:
-    cold_thresh = st.slider("Cold-spell threshold: daily min ≤ (°C)", -15, 5, -5)
-    cold_days = st.slider("Minimum consecutive days (cold spell)", 2, 7, 3)
+    cold_thresh = st.slider("Όριο ψυχρής εισβολής: ημερήσια ελάχιστη ≤ (°C)",
+                            -15, 5, -5)
+    cold_days = st.slider("Ελάχιστες συνεχόμενες ημέρες (ψυχρή εισβολή)", 2, 7, 3)
 
 t = df_filtered.set_index("Date")
 heatwaves = find_streaks(t.index.to_series(), t["HighTemp"] >= heat_thresh, heat_days)
 coldspells = find_streaks(t.index.to_series(), t["LowTemp"] <= cold_thresh, cold_days)
 
+
+def fmt_streak_table(streaks):
+    out = streaks.copy()
+    out["Έναρξη"] = out["Έναρξη"].apply(fmt_date)
+    out["Λήξη"] = out["Λήξη"].apply(fmt_date)
+    return out.sort_values("Ημέρες", ascending=False)
+
+
 hwc1, hwc2 = st.columns(2)
 with hwc1:
-    st.subheader(f"🔥 Heatwaves (≥{heat_thresh} °C for {heat_days}+ days)")
+    st.subheader(f"🔥 Καύσωνες (≥{heat_thresh} °C για {heat_days}+ ημέρες)")
     if heatwaves.empty:
-        st.info("No heatwaves found for these criteria.")
+        st.info("Δεν βρέθηκαν καύσωνες με αυτά τα κριτήρια.")
     else:
-        st.dataframe(heatwaves.sort_values("Days", ascending=False),
-                     width='stretch')
+        st.dataframe(fmt_streak_table(heatwaves), width='stretch')
 with hwc2:
-    st.subheader(f"❄️ Cold spells (≤{cold_thresh} °C for {cold_days}+ days)")
+    st.subheader(f"❄️ Ψυχρές εισβολές (≤{cold_thresh} °C για {cold_days}+ ημέρες)")
     if coldspells.empty:
-        st.info("No cold spells found for these criteria.")
+        st.info("Δεν βρέθηκαν ψυχρές εισβολές με αυτά τα κριτήρια.")
     else:
-        st.dataframe(coldspells.sort_values("Days", ascending=False),
-                     width='stretch')
+        st.dataframe(fmt_streak_table(coldspells), width='stretch')
 
 # ------------------------------------------------------------
-# Wind rose
+# Ροδόγραμμα ανέμου
 # ------------------------------------------------------------
-st.header("🧭 Wind Rose")
+st.header("🧭 Ροδόγραμμα Ανέμου")
 wind_period = st.radio(
-    "Period", ["All data", "Before relocation (≤ 07/12/2010, anemometer 3 m)",
-               "After relocation (≥ 08/12/2010, anemometer 5 m)"],
+    "Περίοδος",
+    ["Όλα τα δεδομένα",
+     "Πριν τη μετεγκατάσταση (≤ 07/12/2010, ανεμόμετρο 3 m)",
+     "Μετά τη μετεγκατάσταση (≥ 08/12/2010, ανεμόμετρο 5 m)"],
     horizontal=True,
 )
 wdf = df_filtered.dropna(subset=["DominantWindDir"])
-if wind_period.startswith("Before"):
+if wind_period.startswith("Πριν"):
     wdf = wdf[wdf["Date"] < STATION_RELOCATION]
-elif wind_period.startswith("After"):
+elif wind_period.startswith("Μετά"):
     wdf = wdf[wdf["Date"] >= STATION_RELOCATION]
 
 if wdf.empty:
-    st.info("No wind-direction data for the selected period.")
+    st.info("Δεν υπάρχουν δεδομένα διεύθυνσης ανέμου για την επιλεγμένη περίοδο.")
 else:
     rose = (wdf.groupby("DominantWindDir")
-            .agg(Days=("DominantWindDir", "size"),
-                 AvgSpeed=("AvgWindSpeed_kmh", "mean"))
+            .agg(Ημέρες=("DominantWindDir", "size"),
+                 Ταχύτητα=("AvgWindSpeed_kmh", "mean"))
             .reindex(WIND_DIRS).fillna(0).reset_index())
     fig_rose = go.Figure(go.Barpolar(
-        r=rose["Days"], theta=rose["DominantWindDir"],
-        marker=dict(color=rose["AvgSpeed"], colorscale="Viridis",
-                    colorbar=dict(title="Avg speed<br>(km/h)")),
+        r=rose["Ημέρες"], theta=rose["DominantWindDir"],
+        marker=dict(color=rose["Ταχύτητα"], colorscale="Viridis",
+                    colorbar=dict(title="Μέση ταχύτητα<br>(km/h)")),
     ))
     fig_rose.update_layout(
-        title="Dominant Daily Wind Direction (bar length = days, color = avg speed)",
+        title="Επικρατούσα ημερήσια διεύθυνση ανέμου "
+              "(μήκος = ημέρες, χρώμα = μέση ταχύτητα)",
         polar=dict(angularaxis=dict(direction="clockwise", rotation=90)),
     )
     st.plotly_chart(fig_rose, width='stretch')
     st.caption(
-        "The anemometer height changed from 3 m to 5 m at the relocation "
-        "(08/12/2010), so wind speeds before/after are not directly comparable. "
-        "Known wind-data gaps and underestimation periods are listed in the "
-        "Data Quality section."
+        "Το ύψος του ανεμομέτρου άλλαξε από 3 m σε 5 m κατά τη μετεγκατάσταση "
+        "(08/12/2010), οπότε οι ταχύτητες πριν/μετά δεν είναι άμεσα "
+        "συγκρίσιμες. Οι γνωστές απώλειες και περίοδοι υποεκτίμησης "
+        "αναφέρονται στην ενότητα Ποιότητα Δεδομένων."
     )
 
 # ------------------------------------------------------------
-# Climatology: a year vs the long-term normal
+# Κλιματολογία: ένα έτος σε σχέση με το «κανονικό»
 # ------------------------------------------------------------
-st.header("📆 Year vs Climatological Normal")
+st.header("📆 Έτος σε Σύγκριση με το Κλιματολογικό «Κανονικό»")
 clim = (df_cy.groupby(["Month", "Day"])["MeanTemp"]
         .agg(Normal="mean", P10=lambda s: s.quantile(0.10),
              P90=lambda s: s.quantile(0.90))
@@ -429,7 +507,7 @@ clim["DOY"] = pd.to_datetime(
     dict(year=2001, month=clim["Month"], day=clim["Day"]), errors="coerce")
 clim = clim.dropna(subset=["DOY"]).sort_values("DOY")
 
-sel_year = st.selectbox("Select a year to compare with the normal",
+sel_year = st.selectbox("Επιλέξτε έτος για σύγκριση με το κανονικό",
                         sorted(df["Year"].unique(), reverse=True))
 yr = df[df["Year"] == sel_year][["Month", "Day", "MeanTemp"]]
 comp = clim.merge(yr, on=["Month", "Day"], how="left")
@@ -440,28 +518,31 @@ fig_clim.add_trace(go.Scatter(x=comp["DOY"], y=comp["P90"], mode="lines",
 fig_clim.add_trace(go.Scatter(x=comp["DOY"], y=comp["P10"], mode="lines",
                               line=dict(width=0), fill="tonexty",
                               fillcolor="rgba(128,128,128,0.25)",
-                              name="10th–90th percentile"))
+                              name="10ο–90ό εκατοστημόριο"))
 fig_clim.add_trace(go.Scatter(x=comp["DOY"], y=comp["Normal"], mode="lines",
-                              name=f"Normal ({min(complete_years)}–{max(complete_years)})",
+                              name=f"Κανονικό ({min(complete_years)}–{max(complete_years)})",
                               line=dict(color="black", dash="dot")))
 fig_clim.add_trace(go.Scatter(x=comp["DOY"], y=comp["MeanTemp"], mode="lines",
                               name=f"{sel_year}", line=dict(color="firebrick")))
-fig_clim.update_layout(title=f"Daily Mean Temperature: {sel_year} vs Normal",
-                       yaxis_title="°C",
-                       xaxis=dict(tickformat="%b", dtick="M1"))
+fig_clim.update_layout(
+    title=f"Ημερήσια μέση θερμοκρασία: {sel_year} σε σχέση με το κανονικό",
+    yaxis_title="°C",
+    xaxis=dict(tickmode="array",
+               tickvals=pd.to_datetime([f"2001-{m:02d}-01" for m in range(1, 13)]),
+               ticktext=GR_MONTHS[1:]))
 st.plotly_chart(fig_clim, width='stretch')
 
 # ------------------------------------------------------------
-# Annual bulletin: one-page summary of a selected year
+# Ετήσιο δελτίο: μονοσέλιδη σύνοψη επιλεγμένου έτους
 # ------------------------------------------------------------
-st.header("📰 Annual Bulletin")
-bul_year = st.selectbox("Select year", sorted(df["Year"].unique(), reverse=True),
+st.header("📰 Ετήσιο Δελτίο")
+bul_year = st.selectbox("Επιλέξτε έτος", sorted(df["Year"].unique(), reverse=True),
                         key="bulletin_year")
 ydf = df[df["Year"] == bul_year]
 is_complete = bul_year in complete_years
 if not is_complete:
-    st.info(f"{bul_year} is a partial year — annual totals and counts below "
-            "cover only the recorded months.")
+    st.info(f"Το {bul_year} είναι μερικό έτος — τα σύνολα και οι μετρήσεις "
+            "παρακάτω καλύπτουν μόνο τους καταγεγραμμένους μήνες.")
 
 normal_mean = df_cy["MeanTemp"].mean()
 y_mean = ydf["MeanTemp"].mean()
@@ -474,196 +555,219 @@ y_issues = rain_issues_overlapping(ydf["Date"].min(), ydf["Date"].max())
 
 b1, b2, b3, b4 = st.columns(4)
 with b1:
-    delta = f"{y_mean - normal_mean:+.1f} °C vs normal" if is_complete else None
-    st.metric("Annual mean temp", f"{y_mean:.1f} °C", delta=delta)
+    delta = (f"{y_mean - normal_mean:+.1f} °C από το κανονικό"
+             if is_complete else None)
+    st.metric("Ετήσια μέση θερμοκρασία", f"{y_mean:.1f} °C", delta=delta)
 with b2:
-    st.metric("Total rain (recorded)", f"{ydf['Rain_mm'].sum():.0f} mm")
+    st.metric("Συνολική βροχή (καταγεγραμμένη)", f"{ydf['Rain_mm'].sum():.0f} mm")
 with b3:
-    st.metric("Days ≥ 35 °C", int((ydf["HighTemp"] >= 35).sum()))
+    st.metric("Ημέρες ≥ 35 °C", int((ydf["HighTemp"] >= 35).sum()))
 with b4:
-    st.metric("Tropical nights (Tmin ≥ 20 °C)", int((ydf["LowTemp"] >= 20).sum()))
+    st.metric("Τροπικές νύχτες (Tmin ≥ 20 °C)", int((ydf["LowTemp"] >= 20).sum()))
 
 b5, b6, b7, b8 = st.columns(4)
 with b5:
-    st.metric("Frost days (Tmin < 0 °C)", int((ydf["LowTemp"] < 0).sum()))
+    st.metric("Ημέρες παγετού (Tmin < 0 °C)", int((ydf["LowTemp"] < 0).sum()))
 with b6:
-    st.metric("Hottest day", f"{y_hot['HighTemp']:.1f} °C")
-    st.caption(y_hot["Date"].strftime("%d %b"))
+    st.metric("Θερμότερη μέρα", f"{y_hot['HighTemp']:.1f} °C")
+    st.caption(fmt_date(y_hot["Date"], with_year=False))
 with b7:
-    st.metric("Coldest day", f"{y_cold['LowTemp']:.1f} °C")
-    st.caption(y_cold["Date"].strftime("%d %b"))
+    st.metric("Ψυχρότερη μέρα", f"{y_cold['LowTemp']:.1f} °C")
+    st.caption(fmt_date(y_cold["Date"], with_year=False))
 with b8:
-    st.metric("Longest dry spell", f"{y_dry_len} days")
+    st.metric("Μεγαλύτερη ανομβρία", f"{y_dry_len} ημέρες")
     if y_dry_start is not None:
-        st.caption(f"{y_dry_start.strftime('%d %b')} → {y_dry_end.strftime('%d %b')}")
+        st.caption(f"{fmt_date(y_dry_start, False)} → {fmt_date(y_dry_end, False)}")
 
 if y_wet is not None:
-    st.caption(f"Rainiest day of {bul_year}: {y_wet['Rain_mm']:.1f} mm on "
-               f"{y_wet['Date'].strftime('%d %b')}.")
+    st.caption(f"Βροχερότερη μέρα του {bul_year}: {y_wet['Rain_mm']:.1f} mm "
+               f"στις {fmt_date(y_wet['Date'], with_year=False)}.")
 if y_issues:
-    st.warning(f"⚠️ {bul_year} includes {len(y_issues)} documented rainfall "
-               "data issue(s); rain totals and dry spells for this year may "
-               "be affected (see Data Quality).")
+    st.warning(f"⚠️ Το {bul_year} περιλαμβάνει {len(y_issues)} καταγεγραμμένα "
+               "προβλήματα βροχομετρικών δεδομένων· τα σύνολα βροχής και οι "
+               "ανομβρίες του έτους ενδέχεται να επηρεάζονται "
+               "(βλ. Ποιότητα Δεδομένων).")
 
-# Monthly anomaly vs the long-term normal
+# Μηνιαία ανωμαλία σε σχέση με το μακροχρόνιο κανονικό
 if is_complete:
     month_norm = df_cy.groupby("Month")["MeanTemp"].mean()
     month_year = ydf.groupby("Month")["MeanTemp"].mean()
     anom = (month_year - month_norm).reset_index()
-    anom.columns = ["Month", "Anomaly"]
-    fig_anom = px.bar(anom, x="Month", y="Anomaly",
-                      color="Anomaly", color_continuous_scale="RdBu_r",
+    anom.columns = ["Μήνας", "Ανωμαλία"]
+    fig_anom = px.bar(anom, x="Μήνας", y="Ανωμαλία",
+                      color="Ανωμαλία", color_continuous_scale="RdBu_r",
                       range_color=[-4, 4],
-                      title=f"Monthly Temperature Anomaly {bul_year} vs Normal "
-                            f"({min(complete_years)}–{max(complete_years)})",
-                      labels={"Anomaly": "Δ °C"})
+                      title=f"Μηνιαία θερμοκρασιακή ανωμαλία {bul_year} σε σχέση "
+                            f"με το κανονικό ({min(complete_years)}–{max(complete_years)})",
+                      labels={"Ανωμαλία": "Δ °C"})
     fig_anom.update_layout(coloraxis_showscale=False,
                            xaxis=dict(tickmode="array",
                                       tickvals=list(range(1, 13)),
-                                      ticktext=["Jan", "Feb", "Mar", "Apr",
-                                                "May", "Jun", "Jul", "Aug",
-                                                "Sep", "Oct", "Nov", "Dec"]))
+                                      ticktext=GR_MONTHS[1:]))
     st.plotly_chart(fig_anom, width='stretch')
 
 # ------------------------------------------------------------
-# Aggregated views (dual-axis, so temperature and rain are readable)
+# Συγκεντρωτικές όψεις (διπλός άξονας για αναγνωσιμότητα)
 # ------------------------------------------------------------
-st.header("📅 Aggregated Views")
+st.header("📅 Συγκεντρωτικές Όψεις")
 
 yearly = df_filtered.groupby("Year").agg(
     MeanTemp=("MeanTemp", "mean"), Rain=("Rain_mm", "sum")).reset_index()
 fig_yearly = make_subplots(specs=[[{"secondary_y": True}]])
 fig_yearly.add_trace(go.Bar(x=yearly["Year"], y=yearly["Rain"],
-                            name="Total rain (mm)",
+                            name="Συνολική βροχή (mm)",
                             marker_color="steelblue", opacity=0.7),
                      secondary_y=False)
 fig_yearly.add_trace(go.Scatter(x=yearly["Year"], y=yearly["MeanTemp"],
-                                name="Mean temp (°C)", mode="lines+markers",
+                                name="Μέση θερμοκρασία (°C)",
+                                mode="lines+markers",
                                 line=dict(color="firebrick")),
                      secondary_y=True)
-fig_yearly.update_layout(title="Yearly Totals & Averages")
-fig_yearly.update_yaxes(title_text="Rain (mm)", secondary_y=False)
-fig_yearly.update_yaxes(title_text="Mean temp (°C)", secondary_y=True)
+fig_yearly.update_layout(title="Ετήσια σύνολα & μέσοι όροι")
+fig_yearly.update_yaxes(title_text="Βροχή (mm)", secondary_y=False)
+fig_yearly.update_yaxes(title_text="Μέση θερμοκρασία (°C)", secondary_y=True)
 st.plotly_chart(fig_yearly, width='stretch')
-st.caption("Rain totals for years with known data losses understate the true "
-           "amount (e.g. 2009, 2018, 2022 — see Data Quality).")
+st.caption("Τα σύνολα βροχής σε έτη με γνωστές απώλειες υποεκτιμούν την "
+           "πραγματική ποσότητα (π.χ. 2009, 2018, 2022 — βλ. Ποιότητα Δεδομένων).")
 
 monthly = df_cy.groupby("Month").agg(
     MeanTemp=("MeanTemp", "mean"),
     Rain=("Rain_mm", "sum")).reset_index()
-monthly["Rain"] = monthly["Rain"] / len(complete_years)  # avg per month
+monthly["Rain"] = monthly["Rain"] / len(complete_years)  # μέσος όρος ανά μήνα
 fig_monthly = make_subplots(specs=[[{"secondary_y": True}]])
 fig_monthly.add_trace(go.Bar(x=monthly["Month"], y=monthly["Rain"],
-                             name="Avg monthly rain (mm)",
+                             name="Μέση μηνιαία βροχή (mm)",
                              marker_color="steelblue", opacity=0.7),
                       secondary_y=False)
 fig_monthly.add_trace(go.Scatter(x=monthly["Month"], y=monthly["MeanTemp"],
-                                 name="Mean temp (°C)", mode="lines+markers",
+                                 name="Μέση θερμοκρασία (°C)",
+                                 mode="lines+markers",
                                  line=dict(color="firebrick")),
                       secondary_y=True)
 fig_monthly.update_layout(
-    title="Climogram: Average Monthly Rainfall & Temperature",
+    title="Κλιμόγραμμα: μέση μηνιαία βροχόπτωση & θερμοκρασία",
     xaxis=dict(tickmode="array", tickvals=list(range(1, 13)),
-               ticktext=["Jan", "Feb", "Mar", "Apr", "May", "Jun",
-                         "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]))
-fig_monthly.update_yaxes(title_text="Rain (mm)", secondary_y=False)
-fig_monthly.update_yaxes(title_text="Mean temp (°C)", secondary_y=True)
+               ticktext=GR_MONTHS[1:]))
+fig_monthly.update_yaxes(title_text="Βροχή (mm)", secondary_y=False)
+fig_monthly.update_yaxes(title_text="Μέση θερμοκρασία (°C)", secondary_y=True)
 st.plotly_chart(fig_monthly, width='stretch')
 
-st.subheader("🌡️ Monthly Temperature Heatmap")
+st.subheader("🌡️ Χάρτης Θερμότητας Μηνιαίων Θερμοκρασιών")
 heatmap_data = df_filtered.pivot_table(index="Year", columns="Month",
                                        values="MeanTemp", aggfunc="mean")
 fig_heat = px.imshow(heatmap_data,
-                     labels=dict(x="Month", y="Year", color="Mean Temp (°C)"),
+                     labels=dict(x="Μήνας", y="Έτος",
+                                 color="Μέση θερμ. (°C)"),
                      color_continuous_scale="RdBu_r",
-                     title="Average Temperature by Year and Month")
+                     title="Μέση θερμοκρασία ανά έτος και μήνα")
+fig_heat.update_xaxes(tickmode="array", tickvals=list(range(1, 13)),
+                      ticktext=GR_MONTHS[1:])
 st.plotly_chart(fig_heat, width='stretch')
 
 # ------------------------------------------------------------
-# Distributions
+# Κατανομές
 # ------------------------------------------------------------
-st.header("📊 Distributions")
+st.header("📊 Κατανομές")
 d1, d2 = st.columns(2)
 with d1:
     fig_hist = px.histogram(df_filtered, x="MeanTemp", nbins=50,
-                            title="Temperature Distribution")
+                            title="Κατανομή θερμοκρασίας",
+                            labels={"MeanTemp": "Μέση θερμοκρασία (°C)",
+                                    "count": "Ημέρες"})
+    fig_hist.update_yaxes(title_text="Ημέρες")
     st.plotly_chart(fig_hist, width='stretch')
 with d2:
     fig_box = px.box(df_filtered, x="Month", y="MeanTemp",
-                     title="Temperature by Month (box plot)")
+                     title="Θερμοκρασία ανά μήνα (θηκόγραμμα)",
+                     labels={"Month": "Μήνας",
+                             "MeanTemp": "Μέση θερμοκρασία (°C)"})
+    fig_box.update_xaxes(tickmode="array", tickvals=list(range(1, 13)),
+                         ticktext=GR_MONTHS[1:])
     st.plotly_chart(fig_box, width='stretch')
 
 fig_rain_dist = px.histogram(df_filtered[df_filtered["Rain_mm"] > 0],
                              x="Rain_mm", nbins=50,
-                             title="Rainfall Distribution (days with rain)")
+                             title="Κατανομή βροχόπτωσης (ημέρες με βροχή)",
+                             labels={"Rain_mm": "Βροχή (mm)"})
+fig_rain_dist.update_yaxes(title_text="Ημέρες")
 st.plotly_chart(fig_rain_dist, width='stretch')
 
 # ------------------------------------------------------------
-# Data quality & station metadata
+# Ποιότητα δεδομένων & πληροφορίες σταθμού
 # ------------------------------------------------------------
-st.header("🔍 Data Quality & Station Info")
-with st.expander("Station metadata and known data issues", expanded=False):
+st.header("🔍 Ποιότητα Δεδομένων & Πληροφορίες Σταθμού")
+with st.expander("Μεταδεδομένα σταθμού και γνωστά προβλήματα", expanded=False):
     st.markdown(
         """
-**Station: Kastoria (LGC0)** — elevation 623 m.
-Originally located at the Makedni Town Hall (grass surface, temp/humidity
-sensors at 2 m, anemometer at 3 m). **Relocated within the city of Kastoria
-on 08/12/2010** at the same elevation; the anemometer was raised to 5 m.
-Data begin in **September 2008**; no observations exist before that date.
+**Σταθμός: Καστοριά (LGC0)** — υψόμετρο 623 m.
+Αρχικά στο Δημαρχείο Μακεδνών (σε γρασίδι, αισθητήρες θερμοκρασίας/υγρασίας
+στα 2 m, ανεμόμετρο στα 3 m). **Μετεγκαταστάθηκε εντός της πόλης της
+Καστοριάς στις 08/12/2010** σε ίδιο υψόμετρο· το ανεμόμετρο τοποθετήθηκε
+στα 5 m. Τα δεδομένα ξεκινούν τον **Σεπτέμβριο του 2008**· δεν υπάρχουν
+παρατηρήσεις πριν από αυτή την ημερομηνία.
 
-**Implications for this dashboard**
-- Rainfall totals are **lower bounds**: numerous documented sensor faults
-  mean real rainfall went unrecorded (roughly 350+ mm across 2008–2025,
-  with the largest single loss ~60 mm on 26/06/2018).
-- Wind speeds before and after 08/12/2010 are **not directly comparable**
-  (anemometer height 3 m → 5 m), and two periods
-  (01/03–01/06/2018, 01/09–04/10/2021) are known to **underestimate** speed.
-- Temperature series spans two station sitings; long-term trends should be
-  read with this inhomogeneity in mind.
+**Τι σημαίνει αυτό για τον πίνακα**
+- Τα σύνολα βροχόπτωσης είναι **κάτω όρια**: πολλές τεκμηριωμένες βλάβες
+  αισθητήρων σημαίνουν ότι πραγματική βροχή δεν καταγράφηκε (συνολικά
+  350+ mm την περίοδο 2008–2025, με μεγαλύτερη μεμονωμένη απώλεια
+  ~60 mm στις 26/06/2018).
+- Οι ταχύτητες ανέμου πριν και μετά τις 08/12/2010 **δεν συγκρίνονται
+  άμεσα** (ύψος ανεμομέτρου 3 m → 5 m), ενώ σε δύο περιόδους
+  (01/03–01/06/2018, 01/09–04/10/2021) είναι γνωστό ότι **υποεκτιμώνται**.
+- Η σειρά θερμοκρασίας καλύπτει δύο θέσεις σταθμού· οι μακροχρόνιες τάσεις
+  πρέπει να διαβάζονται με επίγνωση αυτής της ανομοιογένειας.
         """
     )
 
     full_range = pd.date_range(df["Date"].min(), df["Date"].max(), freq="D")
     missing_dates = full_range.difference(df["Date"])
     qc1, qc2, qc3 = st.columns(3)
-    qc1.metric("Calendar days missing from CSV", len(missing_dates))
-    qc2.metric("Days with missing rain value", int(df["Rain_mm"].isna().sum()))
-    qc3.metric("Days with unknown wind direction",
+    qc1.metric("Ημερολογιακές ημέρες που λείπουν από το CSV", len(missing_dates))
+    qc2.metric("Ημέρες με κενή τιμή βροχής", int(df["Rain_mm"].isna().sum()))
+    qc3.metric("Ημέρες με άγνωστη διεύθυνση ανέμου",
                int(df["DominantWindDir"].isna().sum()))
 
-    st.markdown("**Known rainfall data issues (station log):**")
+    st.markdown("**Γνωστά προβλήματα βροχομετρικών δεδομένων (ημερολόγιο σταθμού):**")
     issues_df = pd.DataFrame(
-        [(s.date(), e.date(), f"~{mm} mm" if mm else "unknown", note)
+        [(fmt_date(s), fmt_date(e), f"~{mm} mm" if mm else "άγνωστη", note)
          for s, e, mm, note in RAIN_ISSUE_INTERVALS],
-        columns=["From", "To", "Est. loss", "Note"])
+        columns=["Από", "Έως", "Εκτ. απώλεια", "Σημείωση"])
     st.dataframe(issues_df, width='stretch')
 
-    st.markdown("**Known wind data issues (station log):**")
+    st.markdown("**Γνωστά προβλήματα δεδομένων ανέμου (ημερολόγιο σταθμού):**")
     wind_df = pd.DataFrame(
-        [(pd.Timestamp(s).date(), pd.Timestamp(e).date(), note)
+        [(fmt_date(pd.Timestamp(s)), fmt_date(pd.Timestamp(e)), note)
          for s, e, note in KNOWN_WIND_ISSUES],
-        columns=["From", "To", "Note"])
+        columns=["Από", "Έως", "Σημείωση"])
     st.dataframe(wind_df, width='stretch')
 
     if len(missing_dates) > 0:
-        st.markdown("**Dates entirely absent from the CSV:**")
-        st.dataframe(pd.DataFrame({"Missing date": missing_dates.date}),
-                     width='stretch', height=200)
+        st.markdown("**Ημερομηνίες που απουσιάζουν εντελώς από το CSV:**")
+        st.dataframe(
+            pd.DataFrame({"Ημερομηνία": [fmt_date(d) for d in missing_dates]}),
+            width='stretch', height=200)
 
 # ------------------------------------------------------------
-# Raw data table
+# Πρωτογενή δεδομένα
 # ------------------------------------------------------------
-st.header("📋 Raw Data (filtered)")
-if st.checkbox("Show raw data"):
-    st.dataframe(df_filtered[["Date", "MeanTemp", "HighTemp", "LowTemp",
-                              "Rain_mm", "AvgWindSpeed_kmh",
-                              "MaxWindSpeed_kmh", "DominantWindDir"]])
+st.header("📋 Πρωτογενή Δεδομένα (φιλτραρισμένα)")
+if st.checkbox("Εμφάνιση πρωτογενών δεδομένων"):
+    raw = df_filtered[["Date", "MeanTemp", "HighTemp", "LowTemp", "Rain_mm",
+                       "AvgWindSpeed_kmh", "MaxWindSpeed_kmh",
+                       "DominantWindDir"]].rename(columns={
+        "Date": "Ημερομηνία", "MeanTemp": "Μέση (°C)",
+        "HighTemp": "Μέγιστη (°C)", "LowTemp": "Ελάχιστη (°C)",
+        "Rain_mm": "Βροχή (mm)", "AvgWindSpeed_kmh": "Μέσος άνεμος (km/h)",
+        "MaxWindSpeed_kmh": "Μέγ. ριπή (km/h)",
+        "DominantWindDir": "Διεύθυνση"})
+    st.dataframe(raw)
 
 # ------------------------------------------------------------
-# Footer
+# Υποσέλιδο
 # ------------------------------------------------------------
 st.caption(
-    "Data source: Kastoria meteorological station LGC0 (Sep 2008 – Feb 2026), "
-    "elevation 623 m. Rainfall and wind records include documented gaps; see "
-    "the Data Quality section. Dashboard built with Streamlit and Plotly."
+    "Πηγή δεδομένων: μετεωρολογικός σταθμός Καστοριάς LGC0 "
+    "(Σεπ. 2008 – Φεβ. 2026), υψόμετρο 623 m. Οι καταγραφές βροχόπτωσης και "
+    "ανέμου περιλαμβάνουν τεκμηριωμένα κενά· βλ. ενότητα Ποιότητα Δεδομένων. "
+    "Ο πίνακας κατασκευάστηκε με Streamlit και Plotly."
 )
