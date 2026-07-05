@@ -931,6 +931,176 @@ if story_args and st.button("✍️ Δημιουργία αφηγήματος", 
                                    key="dl_short")
 
 # ------------------------------------------------------------
+# Κλιματολογικός σύμβουλος εκδηλώσεων εξωτερικού χώρου
+# ------------------------------------------------------------
+st.header("🎪 Κλιματολογικός Σύμβουλος Εκδηλώσεων")
+st.caption(
+    "Εκτίμηση κλιματολογικού ρίσκου για μελλοντικές ημερομηνίες, με βάση το "
+    "τι συνέβη ιστορικά τις ίδιες ημερολογιακές ημέρες. **Δεν είναι πρόγνωση "
+    "καιρού**: δείχνει πιθανότητες βασισμένες στην κλιματολογία του σταθμού "
+    "και είναι χρήσιμο για την επιλογή ημερομηνίας μήνες νωρίτερα. Για "
+    "ημερομηνίες εντός των επόμενων 7–10 ημερών, συμβουλευτείτε κανονικό "
+    "δελτίο πρόγνωσης."
+)
+
+ev1, ev2, ev3 = st.columns([2, 2, 2])
+default_ev = (pd.Timestamp.today() + pd.Timedelta(days=30)).date()
+ev_start = ev1.date_input("Ημερομηνία έναρξης εκδήλωσης", value=default_ev,
+                          key="ev_start")
+ev_days = ev2.number_input("Διάρκεια (ημέρες)", min_value=1, max_value=14,
+                           value=1, key="ev_days")
+ev_window = ev3.slider("Ημερολογιακό παράθυρο (± ημέρες)", 3, 14, 7,
+                       key="ev_window",
+                       help="Πόσες ημέρες γύρω από κάθε ημερομηνία της "
+                            "εκδήλωσης θα συμπεριληφθούν στο ιστορικό δείγμα. "
+                            "Μεγαλύτερο παράθυρο = μεγαλύτερο δείγμα αλλά "
+                            "μικρότερη εποχική ακρίβεια.")
+
+
+def doy_circular(md_series, target_doy):
+    """Κυκλική απόσταση ημέρας-έτους (χειρίζεται την αλλαγή έτους)."""
+    d = (md_series - target_doy).abs()
+    return pd.concat([d, 365 - d], axis=1).min(axis=1)
+
+
+def event_climatology(data, start, n_days, window):
+    """Ιστορικό δείγμα ημερών γύρω από τις ημερολογιακές ημέρες της
+    εκδήλωσης, και συγκεντρωτικές πιθανότητες/στατιστικά."""
+    data = data.copy()
+    data["DOY"] = data["Date"].dt.dayofyear
+    frames = []
+    for i in range(int(n_days)):
+        day = pd.Timestamp(start) + pd.Timedelta(days=i)
+        tdoy = day.dayofyear
+        dist = doy_circular(data["DOY"], tdoy)
+        frames.append(data[dist <= window])
+    sample = pd.concat(frames).drop_duplicates(subset="Date")
+    if sample.empty:
+        return None, None
+
+    rain_known = sample.dropna(subset=["Rain_mm"])
+    agg = {
+        "n": len(sample),
+        "years": sample["Year"].nunique(),
+        "p_rain1": 100 * (rain_known["Rain_mm"] > 1).mean(),
+        "p_rain5": 100 * (rain_known["Rain_mm"] > 5).mean(),
+        "hi_med": sample["HighTemp"].median(),
+        "hi_p10": sample["HighTemp"].quantile(0.10),
+        "hi_p90": sample["HighTemp"].quantile(0.90),
+        "lo_med": sample["LowTemp"].median(),
+        "lo_p10": sample["LowTemp"].quantile(0.10),
+        "p_hot32": 100 * (sample["HighTemp"] >= 32).mean(),
+        "p_hot35": 100 * (sample["HighTemp"] >= 35).mean(),
+        "p_frost": 100 * (sample["LowTemp"] < 0).mean(),
+        "p_gust40": 100 * (sample["MaxWindSpeed_kmh"] >= 40).mean(),
+        "gust_med": sample["MaxWindSpeed_kmh"].median(),
+    }
+    # Πρόσφατη κλιματολογία (τελευταία 5 πλήρη έτη) για την τάση θέρμανσης
+    recent_years = sorted(sample["Year"].unique())[-5:]
+    recent = sample[sample["Year"].isin(recent_years)]
+    agg["hi_med_recent"] = recent["HighTemp"].median()
+    agg["p_rain1_recent"] = (100 * (recent.dropna(subset=["Rain_mm"])["Rain_mm"]
+                                    > 1).mean())
+    return agg, sample
+
+
+if st.button("🔮 Υπολογισμός κλιματολογικού ρίσκου", key="ev_btn"):
+    ev_s = pd.Timestamp(ev_start)
+    agg, sample = event_climatology(df, ev_s, ev_days, ev_window)
+    if agg is None:
+        st.warning("Δεν βρέθηκε ιστορικό δείγμα για αυτές τις ημερομηνίες.")
+    else:
+        ev_e = ev_s + pd.Timedelta(days=int(ev_days) - 1)
+        lbl = (fmt_date(ev_s) if ev_days == 1
+               else f"{fmt_date(ev_s)} – {fmt_date(ev_e)}")
+        st.subheader(f"Ιστορικό προφίλ: {lbl}")
+        st.caption(f"Δείγμα: {agg['n']} ιστορικές ημέρες από "
+                   f"{agg['years']} έτη (±{ev_window} ημέρες γύρω από τις "
+                   "ημερομηνίες της εκδήλωσης).")
+
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("🌧️ Πιθανότητα βροχής (>1 mm)", f"{agg['p_rain1']:.0f}%",
+                  help="Ποσοστό ιστορικών ημερών με βροχόπτωση άνω του 1 mm.")
+        m2.metric("⛈️ Πιθανότητα έντονης βροχής (>5 mm)",
+                  f"{agg['p_rain5']:.0f}%")
+        m3.metric("🌡️ Τυπική μέγιστη", f"{agg['hi_med']:.0f} °C",
+                  help=f"Διάμεσος. Εύρος 10%–90%: "
+                       f"{agg['hi_p10']:.0f}–{agg['hi_p90']:.0f} °C")
+        m4.metric("🌙 Τυπική ελάχιστη", f"{agg['lo_med']:.0f} °C",
+                  help="Ενδεικτική για βραδινές εκδηλώσεις.")
+
+        m5, m6, m7, m8 = st.columns(4)
+        m5.metric("🥵 Πιθανότητα ≥ 32 °C", f"{agg['p_hot32']:.0f}%")
+        m6.metric("🔥 Πιθανότητα ≥ 35 °C", f"{agg['p_hot35']:.0f}%")
+        m7.metric("💨 Πιθανότητα ριπών ≥ 40 km/h", f"{agg['p_gust40']:.0f}%")
+        m8.metric("❄️ Πιθανότητα παγετού", f"{agg['p_frost']:.0f}%")
+
+        # Κατανομή μέγιστης θερμοκρασίας του δείγματος
+        fig_ev = px.histogram(sample, x="HighTemp", nbins=30,
+                              title="Κατανομή μέγιστης θερμοκρασίας στο "
+                                    "ιστορικό δείγμα",
+                              labels={"HighTemp": "Μέγιστη θερμοκρασία (°C)"})
+        fig_ev.update_yaxes(title_text="Ημέρες")
+        st.plotly_chart(fig_ev, width='stretch')
+
+        # Συμβουλευτική σύνοψη (ίδια φιλοσοφία με την Κλιματική Αφήγηση)
+        advice = []
+        advice.append(
+            f"Ιστορικά, την περίοδο αυτή η μέγιστη θερμοκρασία κινείται "
+            f"τυπικά γύρω στους {gr_num(agg['hi_med'], 0)} °C (9 στις 10 "
+            f"χρονιές μεταξύ {gr_num(agg['hi_p10'], 0)} και "
+            f"{gr_num(agg['hi_p90'], 0)} °C), ενώ το βράδυ υποχωρεί "
+            f"τυπικά στους {gr_num(agg['lo_med'], 0)} °C.")
+        if agg["p_rain1"] >= 40:
+            advice.append(
+                f"Η πιθανότητα βροχής είναι σημαντική ({agg['p_rain1']:.0f}%): "
+                "για υπαίθρια εκδήλωση συνιστάται εξαρχής εναλλακτικός "
+                "στεγασμένος χώρος ή σκίαστρα/τέντες.")
+        elif agg["p_rain1"] >= 20:
+            advice.append(
+                f"Η πιθανότητα βροχής είναι υπαρκτή ({agg['p_rain1']:.0f}%): "
+                "καλό είναι να προβλεφθεί σχέδιο Β, χωρίς να είναι "
+                "αποτρεπτικός παράγοντας.")
+        else:
+            advice.append(
+                f"Η πιθανότητα βροχής είναι ιστορικά χαμηλή "
+                f"({agg['p_rain1']:.0f}%).")
+        if agg["p_hot35"] >= 15:
+            advice.append(
+                f"Υπάρχει αξιόλογη πιθανότητα καύσωνα ({agg['p_hot35']:.0f}% "
+                "για ≥ 35 °C): προτιμήστε απογευματινές/βραδινές ώρες και "
+                "προβλέψτε σκιά και νερό.")
+        elif agg["p_hot32"] >= 30:
+            advice.append(
+                f"Οι ζεστές ημέρες είναι συχνές ({agg['p_hot32']:.0f}% για "
+                "≥ 32 °C): οι βραδινές ώρες είναι ασφαλέστερη επιλογή για "
+                "εκδηλώσεις με φυσική δραστηριότητα.")
+        if agg["p_frost"] >= 15:
+            advice.append(
+                f"Η πιθανότητα παγετού δεν είναι αμελητέα "
+                f"({agg['p_frost']:.0f}%): για υπαίθρια χρήση απαιτείται "
+                "πρόβλεψη θέρμανσης.")
+        if agg["p_gust40"] >= 15:
+            advice.append(
+                f"Ισχυρές ριπές ανέμου (≥ 40 km/h) εμφανίζονται στο "
+                f"{agg['p_gust40']:.0f}% των ημερών: ελαφριές κατασκευές "
+                "(τέντες, banners, ηχεία σε τρίποδα) χρειάζονται καλή "
+                "αγκύρωση.")
+        if (agg["hi_med_recent"] - agg["hi_med"]) >= 1:
+            advice.append(
+                f"Σημείωση τάσης: την τελευταία πενταετία η τυπική μέγιστη "
+                f"για την περίοδο είναι {gr_num(agg['hi_med_recent'], 0)} °C, "
+                f"υψηλότερη από τον μέσο όρο όλης της σειράς — οι πρόσφατες "
+                "χρονιές είναι πιο αντιπροσωπευτικές για τον σχεδιασμό.")
+        st.markdown("**Συμβουλευτική σύνοψη:** " + " ".join(advice))
+        st.caption(
+            "⚠️ Οι πιθανότητες βασίζονται στην κλιματολογία του σταθμού "
+            "(2008–2026) και δεν αποτελούν πρόγνωση για τη συγκεκριμένη "
+            "χρονιά. Οι πιθανότητες βροχής είναι κάτω όρια λόγω των "
+            "τεκμηριωμένων απωλειών του βροχομέτρου."
+        )
+
+# ------------------------------------------------------------
 # Συγκεντρωτικές όψεις (διπλός άξονας για αναγνωσιμότητα)
 # ------------------------------------------------------------
 st.header("📅 Συγκεντρωτικές Όψεις")
