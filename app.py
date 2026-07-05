@@ -607,6 +607,330 @@ if is_complete:
     st.plotly_chart(fig_anom, width='stretch')
 
 # ------------------------------------------------------------
+# Κλιματική αφήγηση (Climate Storytelling) — data-to-text NLG
+# ------------------------------------------------------------
+st.header("🖋️ Κλιματική Αφήγηση")
+st.caption(
+    "Επιλέξτε μια περίοδο και το σύστημα συνθέτει αφήγημα από τα δεδομένα. "
+    "Η παραγωγή είναι ντετερμινιστική (βασισμένη σε κανόνες): κάθε πρόταση "
+    "αντιστοιχεί σε επαληθεύσιμο υπολογισμό, χωρίς χρήση γεννητικής ΤΝ."
+)
+
+SEASONS = {
+    "Χειμώνας": [12, 1, 2], "Άνοιξη": [3, 4, 5],
+    "Καλοκαίρι": [6, 7, 8], "Φθινόπωρο": [9, 10, 11],
+}
+ORDINALS = {
+    "ο": {2: "δεύτερος", 3: "τρίτος", 4: "τέταρτος", 5: "πέμπτος"},
+    "η": {2: "δεύτερη", 3: "τρίτη", 4: "τέταρτη", 5: "πέμπτη"},
+    "το": {2: "δεύτερο", 3: "τρίτο", 4: "τέταρτο", 5: "πέμπτο"},
+}
+
+
+def plural(n, singular, plural_form):
+    return f"{n} {singular if n == 1 else plural_form}"
+
+
+def gr_num(x, dec=1):
+    """Αριθμός με ελληνικό δεκαδικό διαχωριστικό."""
+    return f"{x:.{dec}f}".replace(".", ",")
+
+
+def shift_window(start, end, year):
+    """Μετατόπιση παραθύρου ημερομηνιών σε άλλο έτος (χειρισμός 29ης Φεβ)."""
+    try:
+        s = start.replace(year=year)
+    except ValueError:
+        s = start.replace(year=year, day=28)
+    yr_end = year + (end.year - start.year)
+    try:
+        e = end.replace(year=yr_end)
+    except ValueError:
+        e = end.replace(year=yr_end, day=28)
+    return s, e
+
+
+def window_stats(data, start, end):
+    """Στατιστικά για ένα παράθυρο ημερομηνιών· None αν κάλυψη < 80%."""
+    w = data[(data["Date"] >= start) & (data["Date"] <= end)]
+    expected = (end - start).days + 1
+    if len(w) < 0.8 * expected:
+        return None
+    return {
+        "n": len(w), "expected": expected,
+        "mean": w["MeanTemp"].mean(),
+        "hot35": int((w["HighTemp"] >= 35).sum()),
+        "tropical": int((w["LowTemp"] >= 20).sum()),
+        "frost": int((w["LowTemp"] < 0).sum()),
+        "ice": int((w["HighTemp"] < 0).sum()),
+        "rain": w["Rain_mm"].sum(),
+        "rain_days": int((w["Rain_mm"] > 1).sum()),
+        "hi_row": w.loc[w["HighTemp"].idxmax()],
+        "lo_row": w.loc[w["LowTemp"].idxmin()],
+        "wet_row": (w.dropna(subset=["Rain_mm"])
+                    .pipe(lambda d: d.loc[d["Rain_mm"].idxmax()]
+                          if not d.empty and d["Rain_mm"].max() > 0 else None)),
+        "gust": w["MaxWindSpeed_kmh"].max(),
+        "frame": w,
+    }
+
+
+def build_story(data, start, end, label, season_word="περίοδος",
+                gender_art="η"):
+    """Σύνθεση αφηγήματος για το παράθυρο [start, end]. Επιστρέφει
+    (αναλυτικό_md, σύντομο_md) ή (None, μήνυμα σφάλματος)."""
+    cur = window_stats(data, start, end)
+    if cur is None:
+        return None, ("Η επιλεγμένη περίοδος έχει ανεπαρκή κάλυψη δεδομένων "
+                      "(κάτω από 80% των ημερών).")
+
+    # Συγκρίσιμα παράθυρα σε όλα τα άλλα έτη
+    comps = {}
+    for y in sorted(data["Year"].unique()):
+        s, e = shift_window(start, end, int(y))
+        st_ = window_stats(data, s, e)
+        if st_ is not None:
+            comps[int(s.year)] = st_
+    comps[start.year] = cur
+
+    normal_mean = np.mean([v["mean"] for k, v in comps.items()
+                           if k != start.year]) if len(comps) > 1 else None
+    normal_rain = np.mean([v["rain"] for k, v in comps.items()
+                           if k != start.year]) if len(comps) > 1 else None
+
+    means_sorted = sorted(comps.items(), key=lambda kv: kv[1]["mean"],
+                          reverse=True)
+    rank_warm = [k for k, v in means_sorted].index(start.year) + 1
+    n_comp = len(comps)
+
+    dl, ds, de = longest_dry_spell(cur["frame"])
+    hw = find_streaks(cur["frame"].set_index("Date").index.to_series(),
+                      cur["frame"].set_index("Date")["HighTemp"] >= 35, 3)
+
+    # Απόλυτα ρεκόρ σταθμού εντός της περιόδου;
+    all_hi = data["HighTemp"].max()
+    all_lo = data["LowTemp"].min()
+    is_abs_hot = cur["hi_row"]["HighTemp"] >= all_hi
+    is_abs_cold = cur["lo_row"]["LowTemp"] <= all_lo
+
+    P = []  # παράγραφοι
+
+    # --- Θερμοκρασία ---
+    t = []
+    if normal_mean is not None:
+        anom = cur["mean"] - normal_mean
+        if rank_warm == 1 and n_comp >= 5:
+            t.append(f"{gr_art_cap(gender_art)} {label} ήταν {art_this(gender_art)} "
+                     f"θερμότερ{end_adj(gender_art)} {season_word} της περιόδου "
+                     f"καταγραφής ({n_comp} συγκρίσιμα έτη), με μέση θερμοκρασία "
+                     f"{gr_num(cur['mean'])} °C — {gr_num(abs(anom))} °C πάνω "
+                     f"από τον μέσο όρο των υπόλοιπων ετών.")
+        elif rank_warm == n_comp and n_comp >= 5:
+            t.append(f"{gr_art_cap(gender_art)} {label} ήταν {art_this(gender_art)} "
+                     f"ψυχρότερ{end_adj(gender_art)} {season_word} της περιόδου "
+                     f"καταγραφής ({n_comp} συγκρίσιμα έτη), με μέση θερμοκρασία "
+                     f"{gr_num(cur['mean'])} °C — {gr_num(abs(anom))} °C κάτω "
+                     f"από τον μέσο όρο των υπόλοιπων ετών.")
+        else:
+            if rank_warm in ORDINALS[gender_art] and n_comp >= 5:
+                rk = (f", {art_this(gender_art)} {ORDINALS[gender_art][rank_warm]} "
+                      f"θερμότερ{end_adj(gender_art)} σε {n_comp} συγκρίσιμα έτη")
+            else:
+                rk = ""
+            if anom >= 0.5:
+                w = f"{gr_num(abs(anom))} °C θερμότερ{end_adj(gender_art)} από το κανονικό"
+            elif anom <= -0.5:
+                w = f"{gr_num(abs(anom))} °C ψυχρότερ{end_adj(gender_art)} από το κανονικό"
+            else:
+                w = "κοντά στα κανονικά για την εποχή επίπεδα"
+            t.append(f"{gr_art_cap(gender_art)} {label} είχε μέση θερμοκρασία "
+                     f"{gr_num(cur['mean'])} °C, {w}{rk}.")
+    else:
+        t.append(f"{gr_art_cap(gender_art)} {label} είχε μέση θερμοκρασία "
+                 f"{gr_num(cur['mean'])} °C (δεν υπάρχουν συγκρίσιμα έτη).")
+
+    hi = cur["hi_row"]
+    rec_txt = (" — νέο απόλυτο ρεκόρ του σταθμού" if is_abs_hot else "")
+    t.append(f"Ο υδράργυρος κορυφώθηκε στους {gr_num(hi['HighTemp'])} °C "
+             f"στις {fmt_date(hi['Date'])}{rec_txt}.")
+    lo = cur["lo_row"]
+    rec_txt = (" — νέο απόλυτο ρεκόρ ψύχους του σταθμού" if is_abs_cold else "")
+    t.append(f"Η χαμηλότερη τιμή, {gr_num(lo['LowTemp'])} °C, σημειώθηκε "
+             f"στις {fmt_date(lo['Date'])}{rec_txt}.")
+    extremes = []
+    if cur["hot35"] > 0:
+        extremes.append(plural(cur["hot35"], "ημέρα", "ημέρες")
+                        + " με μέγιστη ≥ 35 °C")
+    if cur["tropical"] > 0:
+        extremes.append(plural(cur["tropical"], "τροπική νύχτα",
+                               "τροπικές νύχτες") + " (ελάχιστη ≥ 20 °C)")
+    if cur["frost"] > 0:
+        extremes.append(plural(cur["frost"], "ημέρα", "ημέρες") + " παγετού")
+    if cur["ice"] > 0:
+        extremes.append(plural(cur["ice"], "ημέρα", "ημέρες")
+                        + " ολικού παγετού")
+    if extremes:
+        t.append("Καταγράφηκαν " + ", ".join(extremes) + ".")
+    if not hw.empty:
+        h0 = hw.loc[hw["Ημέρες"].idxmax()]
+        span = (f"{fmt_date(h0['Έναρξη'])} – {fmt_date(h0['Λήξη'])} "
+                f"({int(h0['Ημέρες'])} ημέρες)")
+        if len(hw) == 1:
+            t.append(f"Σημειώθηκε ένα κύμα καύσωνα (3+ ημέρες ≥ 35 °C), "
+                     f"την περίοδο {span}.")
+        else:
+            t.append(f"Σημειώθηκαν {len(hw)} κύματα καύσωνα (3+ ημέρες "
+                     f"≥ 35 °C), με μεγαλύτερο αυτό της περιόδου {span}.")
+    P.append(" ".join(t))
+
+    # --- Βροχόπτωση ---
+    r = []
+    if normal_rain is not None and normal_rain > 0:
+        pct = 100 * cur["rain"] / normal_rain
+        if pct < 50:
+            w = f"μόλις το {gr_num(pct, 0)}% του κανονικού για την περίοδο"
+        elif pct > 150:
+            w = f"το {gr_num(pct, 0)}% του κανονικού για την περίοδο"
+        else:
+            w = f"περίπου στο {gr_num(pct, 0)}% του κανονικού"
+        r.append(f"Η καταγεγραμμένη βροχόπτωση έφτασε τα "
+                 f"{gr_num(cur['rain'])} mm — {w} — με βροχή άνω του 1 mm "
+                 f"σε {cur['rain_days']} " + ("ημέρα." if cur["rain_days"] == 1 else "ημέρες."))
+    else:
+        r.append(f"Η καταγεγραμμένη βροχόπτωση έφτασε τα "
+                 f"{gr_num(cur['rain'])} mm, με βροχή άνω του 1 mm σε "
+                 f"{cur['rain_days']} ημέρες.")
+    if cur["wet_row"] is not None:
+        wr = cur["wet_row"]
+        r.append(f"Η βροχερότερη μέρα ήταν η {fmt_date(wr['Date'])} "
+                 f"με {gr_num(wr['Rain_mm'])} mm.")
+    if dl >= 10:
+        r.append(f"Η μεγαλύτερη περίοδος ανομβρίας διήρκεσε {dl} συνεχόμενες "
+                 f"ημέρες ({fmt_date(ds)} – {fmt_date(de)}).")
+    P.append(" ".join(r))
+
+    # --- Άνεμος ---
+    P.append(f"Η ισχυρότερη ριπή ανέμου έφτασε τα {gr_num(cur['gust'])} km/h.")
+
+    # --- Διαφάνεια δεδομένων ---
+    issues = rain_issues_overlapping(start, end)
+    if issues:
+        P.append("*Σημείωση διαφάνειας: η περίοδος επικαλύπτεται με "
+                 + str(len(issues)) + " καταγεγραμμένο(-α) πρόβλημα(-τα) του "
+                 "βροχομέτρου (βλ. Ποιότητα Δεδομένων)· τα μεγέθη βροχόπτωσης "
+                 "και ανομβρίας είναι κάτω όρια.*")
+    if cur["n"] < cur["expected"]:
+        P.append(f"*Κάλυψη δεδομένων: {cur['n']} από {cur['expected']} ημέρες.*")
+
+    full_md = f"### Κλιματικό αφήγημα: {label}\n\n" + "\n\n".join(P)
+
+    # --- Σύντομη εκδοχή (social media) ---
+    s = [f"🌡️ {gr_art_cap(gender_art)} {label} στην Καστοριά: μέση θερμοκρασία "
+         f"{gr_num(cur['mean'])} °C"]
+    if normal_mean is not None:
+        anom = cur["mean"] - normal_mean
+        if rank_warm == 1 and n_comp >= 5:
+            s[0] += f" — {art_this(gender_art)} θερμότερ{end_adj(gender_art)} της {n_comp}ετίας!"
+        elif abs(anom) >= 0.5:
+            s[0] += (f" ({'+' if anom > 0 else '−'}{gr_num(abs(anom))} °C "
+                     f"από το κανονικό)")
+    s.append(f"🔥 Μέγιστη: {gr_num(hi['HighTemp'])} °C ({fmt_date(hi['Date'], False)})"
+             + (" 🏆 ρεκόρ σταθμού" if is_abs_hot else ""))
+    s.append(f"🥶 Ελάχιστη: {gr_num(lo['LowTemp'])} °C ({fmt_date(lo['Date'], False)})")
+    s.append(f"🌧️ Βροχή: {gr_num(cur['rain'])} mm σε {cur['rain_days']} ημέρες")
+    if dl >= 10:
+        s.append(f"☀️ Ανομβρία: {dl} συνεχόμενες ημέρες")
+    s.append("📊 Δεδομένα: σταθμός Καστοριάς LGC0")
+    short_md = "\n".join(s)
+
+    return full_md, short_md
+
+
+def gr_art_cap(g):
+    return {"ο": "Ο", "η": "Η", "το": "Το"}[g]
+
+
+def art_this(g):
+    return {"ο": "ο", "η": "η", "το": "το"}[g]
+
+
+def end_adj(g):
+    return {"ο": "ος", "η": "η", "το": "ο"}[g]
+
+
+ptype = st.radio("Τύπος περιόδου",
+                 ["Μήνας", "Εποχή", "Έτος", "Προσαρμοσμένη"],
+                 horizontal=True, key="story_ptype")
+
+story_args = None
+if ptype == "Μήνας":
+    c1, c2 = st.columns(2)
+    sy = c1.selectbox("Έτος", sorted(df["Year"].unique(), reverse=True),
+                      key="story_my")
+    sm = c2.selectbox("Μήνας", list(range(1, 13)),
+                      format_func=lambda m: GR_MONTHS_FULL[m], key="story_mm")
+    s0 = pd.Timestamp(int(sy), int(sm), 1)
+    e0 = s0 + pd.offsets.MonthEnd(0)
+    story_args = (s0, e0, f"{GR_MONTHS_FULL[sm]} του {sy}",
+                  GR_MONTHS_FULL[sm], "ο")
+elif ptype == "Εποχή":
+    c1, c2 = st.columns(2)
+    sy = c1.selectbox("Έτος", sorted(df["Year"].unique(), reverse=True),
+                      key="story_sy")
+    ssn = c2.selectbox("Εποχή", list(SEASONS.keys()), key="story_ss")
+    if ssn == "Χειμώνας":
+        s0 = pd.Timestamp(int(sy) - 1, 12, 1)
+        e0 = pd.Timestamp(int(sy), 2, 1) + pd.offsets.MonthEnd(0)
+        lbl = f"Χειμώνας {int(sy)-1}–{sy}"
+    else:
+        m0 = SEASONS[ssn][0]
+        s0 = pd.Timestamp(int(sy), m0, 1)
+        e0 = pd.Timestamp(int(sy), SEASONS[ssn][-1], 1) + pd.offsets.MonthEnd(0)
+        lbl = f"{ssn} του {sy}"
+    gender = {"Χειμώνας": "ο", "Άνοιξη": "η",
+              "Καλοκαίρι": "το", "Φθινόπωρο": "το"}[ssn]
+    story_args = (s0, e0, lbl, ssn.lower(), gender)
+elif ptype == "Έτος":
+    sy = st.selectbox("Έτος", sorted(df["Year"].unique(), reverse=True),
+                      key="story_yy")
+    s0 = pd.Timestamp(int(sy), 1, 1)
+    e0 = pd.Timestamp(int(sy), 12, 31)
+    story_args = (s0, e0, f"έτος {sy}", "έτος", "το")
+else:
+    c1, c2 = st.columns(2)
+    s0 = pd.Timestamp(c1.date_input("Από", value=min_date,
+                                    min_value=min_date, max_value=max_date,
+                                    key="story_from"))
+    e0 = pd.Timestamp(c2.date_input("Έως", value=max_date,
+                                    min_value=min_date, max_value=max_date,
+                                    key="story_to"))
+    story_args = (s0, e0,
+                  f"περίοδος {fmt_date(s0)} – {fmt_date(e0)}",
+                  "αντίστοιχη περίοδος", "η")
+
+if story_args and st.button("✍️ Δημιουργία αφηγήματος", key="story_btn"):
+    s0, e0, lbl, sw, g = story_args
+    if s0 > e0:
+        st.error("Η ημερομηνία έναρξης είναι μεταγενέστερη της λήξης.")
+    else:
+        full_md, short_md = build_story(df, s0, e0, lbl, sw, g)
+        if full_md is None:
+            st.warning(short_md)
+        else:
+            tab_full, tab_short = st.tabs(["Αναλυτικό αφήγημα",
+                                           "Σύντομο (social media)"])
+            with tab_full:
+                st.markdown(full_md)
+                st.download_button("⬇️ Λήψη αφηγήματος (.md)", full_md,
+                                   file_name="klimatiko_afigima.md",
+                                   key="dl_full")
+            with tab_short:
+                st.markdown(short_md)
+                st.download_button("⬇️ Λήψη σύντομης εκδοχής (.txt)", short_md,
+                                   file_name="klimatiko_afigima_short.txt",
+                                   key="dl_short")
+
+# ------------------------------------------------------------
 # Συγκεντρωτικές όψεις (διπλός άξονας για αναγνωσιμότητα)
 # ------------------------------------------------------------
 st.header("📅 Συγκεντρωτικές Όψεις")
