@@ -242,7 +242,7 @@ st.sidebar.markdown(
     "Εθνικό Αστεροσκοπείο Αθηνών (https://meteosearch.meteo.gr/data/list-station-files720.cfm)"
 )
 st.sidebar.markdown(
-    "**Επεξεργασία - απεικόνιση:**\n" 
+    "**Επεξεργασία - απεικόνιση:**\n\n" 
     "Καλλίνικος Κωνσταντίνος\n\n"
     "**Τελευταία ενημέρωση:** Ιούλιος 2026"
 )
