@@ -265,19 +265,23 @@ vars_for_plot = st.sidebar.multiselect(
 
 st.sidebar.markdown(
     "**Πηγή δεδομένων:**\n"
-    "Εθνικό Αστεροσκοπείο Αθηνών (https://meteosearch.meteo.gr/data/list-station-files720.cfm)"
+    "Εθνικό Αστεροσκοπείο Αθηνών (Meteosearch) · σταθμός LGC0"
 )
 st.sidebar.markdown(
     "**Επεξεργασία - απεικόνιση:**\n\n" 
     "Καλλίνικος Κωνσταντίνος\n\n"
-    "**Τελευταία ενημέρωση:** Ιούλιος 2026"
+    f"**Εύρος δεδομένων:** {DATA_RANGE}"
 )
 
 # ------------------------------------------------------------
 # Συνοπτικά στατιστικά
 # ------------------------------------------------------------
-st.header("📊 Συνοπτικά Στατιστικά")
-col1, col2, col3, col4 = st.columns(4)
+st.header("📊 Γρήγορη Εικόνα")
+st.caption(
+    f"Επιλεγμένη περίοδος: **{fmt_date(df_filtered['Date'].min())} – "
+    f"{fmt_date(df_filtered['Date'].max())}** · {len(df_filtered):,} ημέρες."
+)
+col1, col2, col3, col4, col5, col6 = st.columns(6)
 with col1:
     st.metric("Μέση θερμοκρασία", f"{df_filtered['MeanTemp'].mean():.1f} °C")
 with col2:
@@ -288,6 +292,27 @@ with col3:
     st.metric("Μέγιστη ριπή ανέμου", f"{df_filtered['MaxWindSpeed_kmh'].max():.1f} km/h")
 with col4:
     st.metric("Ημέρες με βροχή > 1 mm", f"{(df_filtered['Rain_mm'] > 1).sum()}")
+with col5:
+    st.metric("Πληρότητα θερμοκρασίας", f"{TEMP_COMPLETE_PCT:.1f}%")
+with col6:
+    st.metric("Πληρότητα βροχής", f"{RAIN_COMPLETE_PCT:.1f}%")
+
+with st.expander("ℹ️ Ποιότητα και πληρότητα δεδομένων", expanded=False):
+    qc1, qc2, qc3, qc4 = st.columns(4)
+    qc1.metric("Ημέρες στο ημερολόγιο", f"{EXPECTED_DAYS:,}")
+    qc2.metric("Ημέρες που λείπουν", f"{MISSING_DATES_COUNT:,}")
+    qc3.metric("Πληρότητα ανέμου", f"{WIND_COMPLETE_PCT:.1f}%")
+    qc4.metric("Πληρότητα βροχής", f"{RAIN_COMPLETE_PCT:.1f}%")
+    if MISSING_DATES_COUNT:
+        st.warning(
+            "Υπάρχουν ημέρες που απουσιάζουν πλήρως από το CSV. "
+            "Τα κενά δεν θεωρούνται μηδενικές παρατηρήσεις."
+        )
+    st.caption(
+        "Οι δείκτες πληρότητας περιγράφουν το συγκεκριμένο αρχείο και "
+        "δεν διορθώνουν τις τεκμηριωμένες βλάβες του σταθμού. "
+        "Για την ερμηνεία τους δείτε την ενότητα «Ποιότητα Δεδομένων»."
+    )
 
 # ------------------------------------------------------------
 # Ρεκόρ (εντός του επιλεγμένου εύρους ημερομηνιών)
@@ -1043,6 +1068,7 @@ def doy_circular(md_series, target_doy):
     return pd.concat([d, 365 - d], axis=1).min(axis=1)
 
 
+@st.cache_data
 def event_climatology(data, start, n_days, window):
     """Ιστορικό δείγμα ημερών γύρω από τις ημερολογιακές ημέρες της
     εκδήλωσης, και συγκεντρωτικές πιθανότητες/στατιστικά."""
