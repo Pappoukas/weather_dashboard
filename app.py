@@ -10,6 +10,8 @@
 KNOWN_RAIN_ISSUES / KNOWN_WIND_ISSUES και εμφανίζονται σε όλο το dashboard.
 """
 
+from pathlib import Path
+
 import os
 
 import numpy as np
@@ -22,7 +24,12 @@ from plotly.subplots import make_subplots
 # ------------------------------------------------------------
 # Ρυθμίσεις σελίδας
 # ------------------------------------------------------------
-st.set_page_config(page_title="Μετεωρολογικός Πίνακας Καστοριάς", layout="wide")
+st.set_page_config(
+    page_title="Μετεωρολογικός Πίνακας Καστοριάς",
+    page_icon="🌤️",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 
 STATION_RELOCATION = pd.Timestamp("2010-12-08")
 
@@ -116,6 +123,16 @@ def load_data(file_path, file_signature=None):
     αλλιώς το Streamlit θα σέρβιρε το παλιό περιεχόμενο από τη μνήμη."""
     df = pd.read_csv(file_path)
     df.columns = df.columns.str.strip().str.lstrip("\ufeff")
+    required = {
+        "Year", "Month", "Day", "MeanTemp", "HighTemp", "LowTemp",
+        "Rain_mm", "AvgWindSpeed_kmh", "MaxWindSpeed_kmh",
+        "DominantWindDir",
+    }
+    missing = sorted(required.difference(df.columns))
+    if missing:
+        raise ValueError(
+            "Λείπουν υποχρεωτικές στήλες από το CSV: " + ", ".join(missing)
+        )
     for col in ["MeanTemp", "HighTemp", "LowTemp", "Rain_mm",
                 "AvgWindSpeed_kmh", "MaxWindSpeed_kmh",
                 "HeatDegDays", "CoolDegDays"]:
@@ -132,8 +149,8 @@ if uploaded_file is not None:
     df = load_data(uploaded_file)
 else:
     try:
-        csv_path = "kastoria_daily_all_years.csv"
-        stat = os.stat(csv_path)
+        csv_path = Path(__file__).resolve().parent / "kastoria_daily_all_years.csv"
+        stat = csv_path.stat()
         df = load_data(csv_path, (stat.st_mtime, stat.st_size))
         st.sidebar.success("Φορτώθηκε το αρχείο: kastoria_daily_all_years.csv")
     except FileNotFoundError:
@@ -158,6 +175,15 @@ DATA_MIN = df["Date"].min()
 DATA_MAX = df["Date"].max()
 DATA_RANGE = f"{fmt_date(DATA_MIN)} – {fmt_date(DATA_MAX)}"
 YEAR_SPAN = f"{DATA_MIN.year}–{DATA_MAX.year}"
+
+# Δείκτες πληρότητας για γρήγορη αξιολόγηση του αρχείου.
+EXPECTED_DAYS = (DATA_MAX.normalize() - DATA_MIN.normalize()).days + 1
+MISSING_DATES_COUNT = len(
+    pd.date_range(DATA_MIN, DATA_MAX, freq="D").difference(df["Date"])
+)
+TEMP_COMPLETE_PCT = 100 * df[["MeanTemp", "HighTemp", "LowTemp"]].notna().all(axis=1).mean()
+RAIN_COMPLETE_PCT = 100 * df["Rain_mm"].notna().mean()
+WIND_COMPLETE_PCT = 100 * df[["AvgWindSpeed_kmh", "MaxWindSpeed_kmh"]].notna().all(axis=1).mean()
 
 
 def month_acc(m):
